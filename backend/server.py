@@ -593,15 +593,19 @@ async def dashboard(current: UserPublic = Depends(get_current_user)):
     default_rate = (default_count / len(loans) * 100) if loans else 0.0
     pending = sum(1 for a in apps if a["status"] == "pending")
     approved = sum(1 for a in apps if a["status"] == "approved")
-    # Simple monthly chart: disbursed per month (last 6 months)
+    # Monthly chart: disbursed per month (last 6 months, calendar-aware)
     now = datetime.now(timezone.utc)
     chart = []
     for i in range(5, -1, -1):
-        month_start = (now.replace(day=1) - timedelta(days=30 * i)).replace(day=1)
-        m_label = month_start.strftime("%b")
+        year = now.year
+        month = now.month - i
+        while month <= 0:
+            month += 12
+            year -= 1
+        m_label = datetime(year, month, 1).strftime("%b")
         m_total = sum(
             l["principal"] for l in loans
-            if l["funded_at"].month == month_start.month and l["funded_at"].year == month_start.year
+            if l["funded_at"].month == month and l["funded_at"].year == year
         ) if loans else 0
         chart.append({"label": m_label, "value": m_total})
     return {
