@@ -569,3 +569,15 @@ agent_communication:
         • POST /api/loans/loan_d55828a374/undo-pay/1 → 200.
 
       Test script: /app/backend_test.py. No backend code modified (per instructions).
+
+  - agent: "main"
+    message: |
+      Iteration 12 complete.
+      Backend: Branded reportlab PDF endpoint GET /api/clients/{client_id}/analysis-report.pdf?months=<3|6|12> added (6-page premium layout: Cover+Summary, Cashflow, Behaviour, Decision, Red-Flags, Categories). Backend tests PASS 11/11.
+      Frontend:
+        • New-loan flow now has step-based back navigation (stepBack in /app/frontend/app/loan-new/[clientId].tsx) — chevron goes review→upload→analysis→cibil→summary in reverse before exiting.
+        • Bank-statement upload validates by size heuristic (~40KB/month floor) and rejects when LLM-reported months_analyzed < selected months with a "Please upload a valid N months bank statement PDF" dialog.
+        • "Download PDF report" button added to the analysis screen — streams the new PDF endpoint with the Bearer token via fetch().
+        • Dashboard: removed the standalone "Overdue Payment (Current Month)" card (was already absent, cleaned up dead styles).
+        • Loans tab: confirmed no big red "14 overdue payments" banner; only clean filter pills (All / On Track / Overdue / At Risk / Completed). Dead styles and unused Pressable import removed.
+        • Portfolio Health tiles on Dashboard remain fully clickable — verified via screenshots: On Track/Overdue/At Risk/Completed each navigate to /loans?filter=<status> with the correct pill activated.
