@@ -899,3 +899,19 @@ agent_communication:
         • Application (Loan Request) detail now fetches `/latest-analyses` and renders READ-ONLY summary cards for the bank-statement analysis (Risk / Eligibility / Bounces / Avg balance / EMI load / Months) and CIBIL (Score / Band / On-time % / Utilization / Accounts / Enquiries). No re-fetch on existing loans.
         • Dashboard: cleaner — just the big TOTAL FUNDED hero → straight into Portfolio Health tiles → chart → recent activity.
 
+  - agent: "main"
+    message: |
+      Iteration 17 complete. Focus: PDF quality + onboarding + dashboard transactions + one-click download.
+      Backend:
+        • Registered GNU FreeSans (+Bold/Italic) as the default Unicode PDF font. Remapped the Helvetica family names too so existing reportlab code auto-picks Unicode. Verified: analysis PDF now renders ₹ correctly (2 ₹ on page 1 / 22 ₹ in audit PDF). CIBIL PDF has no currency fields by design. Embedded fonts confirmed = FreeSans / FreeSansBold. No more junk box character.
+        • All regressions green (analyze determinism, latest-analyses, audit JSON, support chat, dashboard).
+      Frontend:
+        • New `app/onboarding.tsx` — 4 premium screens built with react-native-onboarding-swiper (Easy Loan Management / AI Risk Analysis / Portfolio Insights / Fast Collections) + Skip/Next/Done. Persisted via AsyncStorage `lendiq_onboarded`.
+        • Root AuthGate in `_layout.tsx` now checks the onboarded flag and routes first-time users to /onboarding before the login screen. Web `finish()` does a full `window.location.href = "/"` reload so the gate re-reads storage (avoids the state-refresh loop).
+        • Dashboard: added a premium **Recent Transactions** widget with tabs (All / Credits / Debits / High Value), color-coded icons, and mobile-friendly rows. Pulls from `/api/transactions`. Replaces the Profile tab's TX history (now removed).
+        • `src/pdf.ts` rewritten for ONE-CLICK download:
+            – Web: proper `<a download=>` → direct save to Downloads (no share prompt).
+            – Android 11+: Storage Access Framework fallback asks for a folder the FIRST time then writes directly there.
+            – iOS / else: opens PDF inline via `WebBrowser.openBrowserAsync` (no share/app-chooser sheet) — user saves from the native browser control.
+          All filenames follow `document_analysis_report_<client>.pdf`, `cibil_analysis_report_<client>.pdf`, `audit_report_<range>_<year>.pdf`.
+
