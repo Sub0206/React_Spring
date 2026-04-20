@@ -34,7 +34,7 @@ export default function NewLoan() {
   const [step, setStep] = useState<Step>("review");
 
   // Upload
-  const [file, setFile] = useState<{ name: string; size: number } | null>(null);
+  const [file, setFile] = useState<{ name: string; size: number; b64?: string } | null>(null);
   const [months, setMonths] = useState<3 | 6 | 12>(6);
 
   // Analysis
@@ -62,7 +62,22 @@ export default function NewLoan() {
       });
       if (res.canceled || !res.assets?.[0]) return;
       const a = res.assets[0];
-      setFile({ name: a.name, size: a.size || 0 });
+
+      // Read file as base64 for real-parse on the backend.
+      let b64: string | undefined;
+      try {
+        if (a.uri?.startsWith("data:")) {
+          // Web path — expo-document-picker returns a data URL here.
+          b64 = a.uri.split(",", 2)[1];
+        } else {
+          const FS = await import("expo-file-system/legacy");
+          b64 = await FS.readAsStringAsync(a.uri, { encoding: "base64" as any });
+        }
+      } catch (err) {
+        // Not fatal — the backend will fall back to deterministic analysis.
+        b64 = undefined;
+      }
+      setFile({ name: a.name, size: a.size || 0, b64 });
     } catch (e: any) {
       Alert.alert("Error", e.message || "Could not pick file");
     }
@@ -98,11 +113,19 @@ export default function NewLoan() {
     try {
       const res = await api<any>("/loan-apps/analyze-statement", {
         method: "POST",
-        body: { client_id: clientId, file_name: file.name, file_size: file.size, months },
+        body: {
+          client_id: clientId,
+          file_name: file.name,
+          file_size: file.size,
+          months,
+          file_base64: file.b64,  // real PDF bytes (b64) — enables actual parsing + bounce detection
+        },
       });
-      // Backend returns months_analyzed — if less than requested, reject the upload.
-      const covered = Number(res?.months_analyzed || 0);
-      if (covered > 0 && covered < months) {
+      // Backend returns months_analyzed — if less than requested AND the file was actually parsed,
+      // reject the upload (deterministic mock path always returns full coverage).
+      const covered = Number(res?.months_covered_in_file || res?.months_analyzed || 0);
+      const source = String(res?.parse_source || "mock");
+      if (source === "parsed" && covered > 0 && covered < months) {
         Alert.alert(
           `Please upload a valid ${months} months bank statement PDF`,
           `The statement we received only covers ${covered} month(s). We need a full ${months}-month statement for a reliable decision.`,
@@ -314,6 +337,73 @@ export default function NewLoan() {
                 <Text style={styles.riskSub}>{analysis.summary}</Text>
               </View>
             </View>
+
+            {/* Transparent "why this risk?" card — derived from the rules engine */}
+            {(analysis.risk_reasons || []).length > 0 && (
+              <Card style={{ marginTop: Spacing.md }}>
+                <Text style={styles.sectionTitle}>Why this risk score?</Text>
+                {(analysis.risk_reasons || []).map((r: any, i: number) => {
+                  const sev = String(r.severity || "low").toLowerCase();
+                  const sc = sev === "high" ? Colors.danger : sev === "medium" ? Colors.warning : Colors.success;
+                  return (
+                    <View key={i} style={[styles.flagRow, { borderLeftColor: sc }]}>
+                      <View style={[styles.flagPill, { backgroundColor: sc + "1A" }]}>
+                        <Text style={[styles.flagPillText, { color: sc }]}>{sev.toUpperCase()}</Text>
+                      </View>
+                      <Text style={[styles.flagTitle, { flex: 1 }]}>{r.label}</Text>
+                    </View>
+                  );
+                })}
+              </Card>
+            )}
+
+            {/* Parsing / confidence transparency */}
+            <Card style={{ marginTop: Spacing.md }}>
+              <Text style={styles.sectionTitle}>Parsing confidence</Text>
+              <View style={styles.confRow}>
+                <Text style={styles.confLabel}>Accuracy</Text>
+                <View style={[styles.confPill, {
+                  backgroundColor:
+                    analysis.parse_confidence === "high" ? Colors.success + "1A" :
+                    analysis.parse_confidence === "low"  ? Colors.danger  + "1A" :
+                    Colors.warning + "1A",
+                }]}>
+                  <Text style={[styles.confPillText, {
+                    color:
+                      analysis.parse_confidence === "high" ? Colors.success :
+                      analysis.parse_confidence === "low"  ? Colors.danger  : Colors.warning,
+                  }]}>
+                    {String(analysis.parse_confidence || "medium").toUpperCase()}
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.confRow}>
+                <Text style={styles.confLabel}>Rows extracted</Text>
+                <Text style={styles.confValue}>{analysis.rows_extracted || 0}</Text>
+              </View>
+              <View style={styles.confRow}>
+                <Text style={styles.confLabel}>Bounce matches</Text>
+                <Text style={[styles.confValue, { color: (analysis.bounce_matches_found || 0) > 0 ? Colors.danger : Colors.textSecondary }]}>
+                  {analysis.bounce_matches_found || 0}
+                </Text>
+              </View>
+              <View style={styles.confRow}>
+                <Text style={styles.confLabel}>Source</Text>
+                <Text style={styles.confValue}>{analysis.parse_source === "parsed" ? "PDF parsed" : "Deterministic"}</Text>
+              </View>
+              <View style={styles.confRow}>
+                <Text style={styles.confLabel}>Missing pages</Text>
+                <Text style={[styles.confValue, { color: analysis.fraud_checks?.missing_pages_detected ? Colors.danger : Colors.success }]}>
+                  {analysis.fraud_checks?.missing_pages_detected ? "Detected" : "None"}
+                </Text>
+              </View>
+              {analysis.manual_review_recommended && (
+                <View style={[styles.manualReview, { backgroundColor: Colors.warningSoft, borderColor: Colors.warning }]}>
+                  <Ionicons name="warning" size={18} color={Colors.warning} />
+                  <Text style={[styles.flagTitle, { color: Colors.warning, flex: 1 }]}>Manual review recommended</Text>
+                </View>
+              )}
+            </Card>
 
             <Card style={{ marginTop: Spacing.md }}>
               <Text style={styles.sectionTitle}>Monthly activity</Text>
@@ -776,6 +866,13 @@ const styles = StyleSheet.create({
   flagPillText: { fontSize: 9, fontWeight: "800", letterSpacing: 0.5 },
   flagTitle: { fontSize: 13, fontWeight: "800", color: Colors.textPrimary },
   flagDetail: { fontSize: 12, color: Colors.textSecondary, marginTop: 2, lineHeight: 17 },
+
+  confRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#F1F5F9" },
+  confLabel: { fontSize: 13, color: Colors.textSecondary, fontWeight: "600" },
+  confValue: { fontSize: 13, fontWeight: "800", color: Colors.textPrimary },
+  confPill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },
+  confPillText: { fontSize: 11, fontWeight: "800", letterSpacing: 0.4 },
+  manualReview: { flexDirection: "row", alignItems: "center", gap: 10, padding: 10, borderRadius: Radii.md, borderWidth: 1, marginTop: 10 },
 
   catRow: { flexDirection: "row", alignItems: "center", gap: 8, marginVertical: 4 },
   catName: { width: 110, fontSize: 12, color: Colors.textPrimary, fontWeight: "700" },

@@ -424,10 +424,49 @@ backend:
           Fallback path verification: explicitly tested client cli_cd90671802ac (lender's client with NO saved statement_analyses doc in Mongo) → 200, 9226 bytes, valid PDF. _fallback_statement_analysis path executes cleanly without 500.
           Regressions PASS: POST /api/clients/cli_seed_000/analyze-statement (body={}) → 200 with 35 top-level keys (all 31 enriched fields present); GET /api/dashboard → 200 with portfolio_health={on_track:3, overdue:6, at_risk:5, completed:3, defaulted:1} (all ints); GET /api/loans → 200; POST /api/loans/loan_d55828a374/repay/1 → 200 followed by /undo-pay/1 → 200 (clean pay+undo cycle). No backend code modified. Script: /app/backend_test.py.
 
+  - task: "Deterministic statement analysis engine (iteration 14)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Iteration-14 backend regression — 40/40 PASS on live preview backend (lender 9876543210, seeded client cli_seed_000).
+
+          A. DETERMINISM + MONTH-SLICE CONSISTENCY (POST /api/clients/{id}/analyze-statement):
+            • A1 Two calls with months=3, file_name='foo.pdf' return IDENTICAL values for bounced_transactions, avg_balance, total_credit, total_debit, avg_monthly_credit, bounce_risk, parse_source. Fully deterministic.
+            • A2 chart lengths 3/6/12 correct. chart(3) == last 3 of chart(6) (label+credit+debit+bounces match exactly). chart(6) == last 6 of chart(12) (exact match).
+            • A3 bounces(12) >= bounces(6) >= bounces(3). bounced_transactions == sum(chart[i].bounces) for all 3 windows.
+            • A4 Different file_name (alpha.pdf vs beta.pdf) → different avg_balance (different 12-hex-digit seeds).
+
+          B. TRANSPARENT RISK ENGINE:
+            • B5 Response includes all required fields with correct types: risk_reasons (list of {severity,label}), parse_confidence in {high,medium,low}, parse_source in {parsed,mock}, rows_extracted (int), bounce_matches_found (int), months_covered_in_file (int), manual_review_recommended (bool).
+            • B6 Rule consistency verified across multiple random clients & file_names: every probe where (bounces==0 AND emi_load_pct<30) has bounce_risk=='low'; every probe where (bounces>=3 OR multi-medium) has bounce_risk=='high'. Zero rule violations.
+
+          C. BOUNCE-KEYWORD DETECTION (REAL PDF via reportlab):
+            • C7 PDF built with reportlab containing 'CHQ RETN INSUFFICIENT FUNDS', 'RTN CHG CHEQUE BOUNCED', 'ECS RETURN INSUFFICIENT FUNDS' lines → parse_source='parsed', bounce_matches_found=3, bounced_transactions=3 (override applied correctly, matches bounce_matches_found exactly), rows_extracted=5.
+            • C8 Invalid base64 ('not-a-real-base64$$$###') → graceful fallback: HTTP 200 with parse_source='mock'.
+
+          D. PDF ENDPOINTS (with ?token= fallback):
+            • D9 GET /api/clients/cli_seed_000/analysis-report.pdf?months=6 (Bearer): 200, Content-Type=application/pdf, magic=b'%PDF-1.', size=9605 bytes (>4KB), CD='attachment; filename=\"LendIQ-Statement-Rajesh_Kumar-20260420.pdf\"'.
+            • D10 Same endpoint with ?token=<jwt> and NO Authorization header: 200, valid PDF, size=9605 bytes.
+            • D11 GET /api/clients/cli_seed_000/cibil-report.pdf?token=<jwt> (no Authorization): 200, valid PDF, size=3930 bytes (>2KB), CD contains 'LendIQ-CIBIL-'.
+            • D12 No auth at all → 401 on both PDF endpoints. Unknown client (cli_does_not_exist) → 404 on both.
+
+          E. REGRESSIONS:
+            • E13 GET /api/dashboard → 200. portfolio_health={on_track:4, overdue:4, at_risk:6, completed:3, defaulted:1} — all 5 values integers.
+            • E14 GET /api/loans → 200, count=32.
+
+          No backend code modified. Test script: /app/backend_test.py.
+
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 7
+  test_sequence: 8
 
 test_plan:
   current_focus: []
