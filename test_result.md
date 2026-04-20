@@ -279,11 +279,11 @@ frontend:
 backend:
   - task: "Enriched statement analyzer (iteration 11)"
     implemented: true
-    working: false
+    working: true
     file: "/app/backend/server.py"
-    stuck_count: 2
+    stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: false
         agent: "testing"
@@ -346,6 +346,26 @@ backend:
               path-based endpoint; the schema logic is otherwise correct.
 
           Test script: /app/backend_test.py. No backend code modified.
+      - working: true
+        agent: "testing"
+        comment: |
+          Iteration-11 RE-TEST #2 (after main-agent typo fix) — PASS.
+          Live backend, lender 9876543210, client cli_seed_000.
+          POST /api/clients/cli_seed_000/analyze-statement (body={}) → HTTP 200.
+          Top-level keys: 35 (all 30 required present, 0 missing).
+          Shapes verified:
+            chart[0] keys = {label, credit, debit, net, bounces}
+            balance_trend[0] keys = {label, value}
+            categories[0] keys = {name, count, amount, share_pct, type}
+            red_flags[0] keys = {severity, title, detail}
+            behaviour keys = {salary_consistency, spending_discipline,
+              cash_dependence_pct, unusual_spikes, frequent_transfers,
+              risky_merchants}
+            fraud_checks keys = {edited_statement_likelihood, missing_pages_detected,
+              duplicate_txn_count, page_count, rotated_pages_fixed, ocr_confidence_pct}
+          Enums validated: bounce_risk=low, risk_color=green, loan_eligibility=moderate,
+          recommended_decision=approve_with_caution. bank_detected='PNB'. highlights list populated.
+          server.py:951 now correctly uses AnalyzeStatementRequest. Endpoint fully working.
 
 metadata:
   created_by: "main_agent"

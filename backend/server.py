@@ -948,7 +948,7 @@ async def analyze_statement_by_path(
     """RESTful alias for statement analysis using client_id as a path parameter."""
     from pydantic import parse_obj_as
     body = body or {}
-    payload = StatementAnalysisRequest(
+    payload = AnalyzeStatementRequest(
         client_id=client_id,
         file_name=body.get("file_name", "statement.pdf"),
         file_size=int(body.get("file_size", 0)),
