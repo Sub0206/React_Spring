@@ -802,3 +802,17 @@ agent_communication:
         • Subscription page `/subscription`: Monthly/Yearly toggle, 3 plan cards (Starter ₹499/mo · Smart Credit ₹1499/mo POPULAR · Prime Elite ₹3999/mo), per-plan features, "Current plan" badge, upgrade CTA (payment gateway mocked).
         • Profile tab gained Subscription + Language rows with icons.
 
+  - agent: "main"
+    message: |
+      Iteration 16 complete — 54/55 backend tests PASS (one cosmetic fix applied).
+      Backend (new endpoints):
+        • GET /api/clients/{id}/latest-analyses → returns most-recent saved statement_analysis + cibil_report for a client so the application-detail page can show a READ-ONLY summary without re-running AI (addresses "don't re-fetch when loan already given").
+        • GET /api/audit/summary?months=<3|6|12>&year=<Y> → inflow (repayments) / outflow (disbursals) / net / overdue / loans_funded / active_loans + monthly breakdown.
+        • GET /api/audit/summary.pdf → branded PDF audit report (reportlab, `?token=` fallback).
+        • POST /api/support/chat → guided step-by-step answers for "add client", "new loan", "EMI rollback", "statement analysis", "CIBIL", "language", "subscription", "audit", "overdue", "logout", "PDF download". Deterministic keyword map — fast, no LLM latency.
+      Frontend:
+        • Profile tab: removed Transaction history card + "Repaid this month" / "Funded this month" cards. Added 4 new setting rows with icons — Subscription, Language, Audit & Reports, Help & Support.
+        • New routes /settings/audit (3M / 6M / 12M / YTD toggle + year stepper + month-wise table + Download audit PDF) and /settings/help (AI guide chatbot with suggestion chips).
+        • Application (Loan Request) detail now fetches `/latest-analyses` and renders READ-ONLY summary cards for the bank-statement analysis (Risk / Eligibility / Bounces / Avg balance / EMI load / Months) and CIBIL (Score / Band / On-time % / Utilization / Accounts / Enquiries). No re-fetch on existing loans.
+        • Dashboard: cleaner — just the big TOTAL FUNDED hero → straight into Portfolio Health tiles → chart → recent activity.
+
