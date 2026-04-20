@@ -560,6 +560,89 @@ test_plan:
   test_all: false
   test_priority: "high_first"
 
+  - task: "Unicode ₹ PDF font fix (iteration 17)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Iteration-17 PDF Unicode ₹ fix validation — PASS on live preview backend (lender 9876543210, client cli_seed_000).
+
+          A. ₹ UNICODE RENDERING + FONT CHECK:
+            • GET /api/clients/cli_seed_000/analysis-report.pdf?months=6 (Bearer)
+              → HTTP 200, Content-Type=application/pdf, magic=b'%PDF-1.', size=30521 bytes (>4KB).
+              ₹ count on page 1 = 2. ₹ found on ≥1 page.
+              Embedded fonts: {'AAAAAA+FreeSans', 'AAAAAA+FreeSansBold'}.
+              No LiberationSans, no Helvetica.
+            • GET /api/audit/summary.pdf?months=6&year=2026 (Bearer)
+              → HTTP 200, CT=application/pdf, %PDF-1., 23903 bytes.
+              ₹ count on page 1 = 22. ₹ found on ≥1 page.
+              Embedded fonts: {'AAAAAA+FreeSans', 'AAAAAA+FreeSansBold'}. No Helvetica/LiberationSans.
+            • GET /api/clients/cli_seed_000/cibil-report.pdf (Bearer)
+              → HTTP 200, CT=application/pdf, %PDF-1., 25208 bytes.
+              ₹ count = 0 in extracted text.
+              Embedded fonts: {'AAAAAA+FreeSans', 'AAAAAA+FreeSansBold'}.
+              EXPLANATION: The CIBIL report by DESIGN contains NO currency amounts —
+              it shows only credit score (742 GOOD), on-time payment %, credit
+              utilization %, total accounts, active loans, hard enquiries, summary
+              text, and key factors. There is nothing to render with ₹.
+              Verified full page 1 text: "CIBIL Score (300 – 900) ... On-time
+              payments 94.5% ... Total accounts 8 ..." — no amounts.
+              The font fix itself IS working (FreeSans embedded, no Helvetica
+              fallback). This is a content-expectation mismatch in the review
+              contract, not a font/rendering bug. If ₹ is required in CIBIL PDF,
+              main agent must add a currency-bearing line (e.g. loan limit or
+              estimated credit line) to the CIBIL template.
+
+          B. ?token= FALLBACK — all 3 PDFs: HTTP 200, valid %PDF-1., >4KB
+             (analysis=30521, cibil=25208, audit=23903). No Authorization header.
+
+          C. REGRESSIONS — ALL PASS:
+            • C1 /api/clients/{id}/analyze-statement determinism: 2× calls with
+              {"months":6,"file_name":"same.pdf"} → bounced_transactions=0 identical,
+              avg_balance=153101 identical.
+            • C2 /api/clients/{id}/latest-analyses → 200 with all 4 keys
+              {statement_analysis, cibil_report, has_statement, has_cibil}.
+            • C3 /api/audit/summary?months=3&year=2026 → 200, monthly.length=3,
+              net=-627600 == inflow_total(0) - outflow_total(627600).
+            • C4 /api/support/chat {"question":"How do I add a new client?"} → 200,
+              answer contains literal "Clients tab".
+            • C5 /api/dashboard → 200, portfolio_health present
+              ({on_track:4, overdue:4, at_risk:6, completed:3, defaulted:1}).
+
+          No backend code modified. Test script: /app/backend_test.py.
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      Iteration-17 validation complete.
+
+      FONT FIX VERIFIED: All 3 PDF endpoints now embed FreeSans / FreeSansBold
+      (no Helvetica, no LiberationSans). The two PDFs that actually display
+      currency values (analysis-report and audit-summary) render the literal
+      Unicode ₹ character correctly:
+        • analysis-report.pdf → 2 ₹ on page 1
+        • audit/summary.pdf   → 22 ₹ on page 1
+
+      CIBIL-REPORT ₹ = 0 (BY DESIGN, NOT A BUG):
+        The CIBIL PDF template contains NO currency amounts — only score (742),
+        percentages (on-time 94.5%, utilization 38.2%), account counts, and
+        textual summary. FreeSans is correctly embedded. If the review contract
+        requires ₹ to appear in CIBIL PDF, main agent must add a currency line
+        (e.g. "Suggested credit limit: ₹X"). Otherwise this endpoint is
+        functioning correctly — the font fix itself is fully applied.
+
+      All C-section regressions PASS (determinism, latest-analyses, audit
+      summary JSON, support chat "Clients tab", dashboard portfolio_health).
+      ?token= fallback PASS on all 3 PDFs.
+
+      No backend code was modified. Script: /app/backend_test.py.
+
 agent_communication:
   - agent: "testing"
     message: |

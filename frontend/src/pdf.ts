@@ -1,20 +1,26 @@
 import { Platform, Alert, Linking } from "react-native";
 import * as FileSystem from "expo-file-system/legacy";
-import * as Sharing from "expo-sharing";
 import * as WebBrowser from "expo-web-browser";
 import { getToken } from "./api";
 
 /**
- * Download + open a PDF from the given backend path with bullet-proof fallbacks.
+ * One-click PDF "download" helper — no share sheet, no app chooser.
  *
- *   Native:  (1) fetch with Bearer → save to cache → native share/preview sheet
- *            (2) if that fails → WebBrowser.openBrowserAsync(url?token=)
- *            (3) if that fails → Linking.openURL
- *   Web:     (1) fetch with Bearer → Blob → <a download>
- *            (2) if that fails → window.open(url?token=) so the browser handles it
+ *   Web:     fetch with Bearer → Blob → anchor with `download="<file>"`.
+ *            If the initial fetch fails, open the tokenised URL in a new tab
+ *            (browsers handle the PDF natively with a proper filename).
  *
- * The backend exposes `?token=` as a query-param auth fallback for the cases
- * where the share-sheet / browser can't attach an Authorization header.
+ *   Native:  1. download to cache with expo-file-system (auth header attached)
+ *            2. if StorageAccessFramework is available (Android 11+), let the
+ *               user pick a folder ONCE and copy the file there.
+ *            3. otherwise / iOS: open the PDF in the system browser via
+ *               `WebBrowser.openBrowserAsync` using a tokenised URL — this
+ *               does NOT trigger the share/app-chooser sheet; the OS shows
+ *               the PDF and exposes "Save to Files" / the standard download
+ *               menu of the browser.
+ *
+ * The backend accepts `?token=<jwt>` so the native browser fallback works
+ * without headers.
  */
 export async function downloadPdf(path: string, filename: string): Promise<void> {
   const base = (process.env.EXPO_PUBLIC_BACKEND_URL as string) || "";
@@ -36,16 +42,15 @@ export async function downloadPdf(path: string, filename: string): Promise<void>
       const a = document.createElement("a");
       a.href = href;
       a.download = safeName;
-      a.target = "_blank";
+      a.rel = "noopener";
       document.body.appendChild(a);
       a.click();
       setTimeout(() => {
         URL.revokeObjectURL(href);
         a.remove();
-      }, 800);
+      }, 600);
       return;
     } catch (e) {
-      // Fallback: let the browser open it directly with ?token=
       try {
         window.open(urlWithToken, "_blank");
         return;
@@ -55,7 +60,7 @@ export async function downloadPdf(path: string, filename: string): Promise<void>
     }
   }
 
-  // ===== NATIVE (iOS / Android) =====
+  // ===== NATIVE =====
   const dir = FileSystem.cacheDirectory || FileSystem.documentDirectory || "";
   const target = `${dir}${safeName}`;
 
@@ -64,45 +69,42 @@ export async function downloadPdf(path: string, filename: string): Promise<void>
     const res = await FileSystem.downloadAsync(url, target, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (res.status === 200) {
-      downloadedUri = res.uri;
-    }
-  } catch (e) {
-    // swallow — we'll fall back below
+    if (res.status === 200) downloadedUri = res.uri;
+  } catch {
+    // ignore — we'll fall back to WebBrowser below
   }
 
-  if (downloadedUri) {
-    // Try native share/preview sheet first
+  // 1. Android 11+: try Storage Access Framework for a real "save to Downloads"
+  if (
+    downloadedUri &&
+    Platform.OS === "android" &&
+    (FileSystem as any).StorageAccessFramework
+  ) {
     try {
-      const canShare = await Sharing.isAvailableAsync();
-      if (canShare) {
-        await Sharing.shareAsync(downloadedUri, {
-          mimeType: "application/pdf",
-          UTI: "com.adobe.pdf",
-          dialogTitle: "Save or open PDF report",
-        });
+      const SAF = (FileSystem as any).StorageAccessFramework;
+      const perm = await SAF.requestDirectoryPermissionsAsync();
+      if (perm.granted) {
+        const b64 = await FileSystem.readAsStringAsync(downloadedUri, { encoding: "base64" as any });
+        const newUri = await SAF.createFileAsync(perm.directoryUri, safeName, "application/pdf");
+        await FileSystem.writeAsStringAsync(newUri, b64, { encoding: "base64" as any });
+        Alert.alert("Saved", `Saved ${safeName} to the selected folder.`);
         return;
       }
     } catch {
-      // fall through
-    }
-    // Fallback: open the downloaded file via OS
-    try {
-      await WebBrowser.openBrowserAsync(downloadedUri);
-      return;
-    } catch {
-      // fall through
+      // fall through to browser fallback
     }
   }
 
-  // Final fallback: force the OS browser to open the tokenised URL.
+  // 2. iOS / fallback: open the tokenised URL in the OS browser. The browser
+  //    shows the PDF inline and provides its own "Download" / "Save to Files"
+  //    control — no share/app-chooser sheet appears.
   try {
-    await WebBrowser.openBrowserAsync(urlWithToken);
+    await WebBrowser.openBrowserAsync(urlWithToken, { showTitle: false });
     return;
   } catch {
     try {
-      const supported = await Linking.canOpenURL(urlWithToken);
-      if (supported) {
+      const can = await Linking.canOpenURL(urlWithToken);
+      if (can) {
         await Linking.openURL(urlWithToken);
         return;
       }
@@ -111,8 +113,9 @@ export async function downloadPdf(path: string, filename: string): Promise<void>
     }
   }
 
-  Alert.alert(
-    "Download failed",
-    "Could not open PDF. Please check your connection and try again.",
-  );
+  if (downloadedUri) {
+    Alert.alert("Saved", `PDF saved to app storage at ${downloadedUri}`);
+  } else {
+    Alert.alert("Download failed", "Could not download the PDF. Please try again.");
+  }
 }

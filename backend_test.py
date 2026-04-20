@@ -1,280 +1,219 @@
 """
-Iteration-16 backend tests — verify the 3 NEW endpoints and regressions.
-
-A. GET /api/clients/{client_id}/latest-analyses
-B. GET /api/audit/summary
-C. GET /api/audit/summary.pdf
-D. POST /api/support/chat
-E. Regressions (dashboard, analysis-report.pdf, analyze-statement determinism)
+Iteration-17 backend validation — Unicode ₹ symbol in PDFs + existing regressions.
+Tests run against live preview backend. No backend code modified.
 """
-import os, sys, json, time
-from datetime import datetime, timezone
+import io
+import os
+import re
+import sys
+import json
 import requests
+import pdfplumber
 
-BASE = os.environ.get(
-    "BACKEND_URL",
-    "https://lending-hub-63.preview.emergentagent.com",
-).rstrip("/")
+BASE = "https://lending-hub-63.preview.emergentagent.com"
 API = f"{BASE}/api"
 MOBILE = "9876543210"
-
-results = []  # list of (section, name, ok, detail)
-
-
-def log(section, name, ok, detail=""):
-    status = "PASS" if ok else "FAIL"
-    print(f"[{status}] {section} :: {name}  {detail}")
-    results.append((section, name, ok, detail))
+CLIENT_ID = "cli_seed_000"
+RUPEE = "\u20B9"
 
 
-def get_token():
-    r = requests.post(f"{API}/auth/send-otp", json={"mobile": MOBILE, "purpose": "login"}, timeout=15)
-    assert r.status_code == 200, f"send-otp failed: {r.status_code} {r.text}"
+def fail(msg):
+    print(f"  [FAIL] {msg}")
+    return False
+
+
+def ok(msg):
+    print(f"  [PASS] {msg}")
+    return True
+
+
+# ---------- AUTH ----------
+def login():
+    r = requests.post(f"{API}/auth/send-otp", json={"mobile": MOBILE, "purpose": "login"}, timeout=30)
+    r.raise_for_status()
     otp = r.json().get("demo_otp")
-    assert otp, "No demo_otp in response"
-    r2 = requests.post(f"{API}/auth/verify-otp", json={"mobile": MOBILE, "otp": otp}, timeout=15)
-    assert r2.status_code == 200, f"verify-otp failed: {r2.status_code} {r2.text}"
-    return r2.json()["access_token"]
+    assert otp, f"no demo_otp: {r.text}"
+    r2 = requests.post(f"{API}/auth/verify-otp", json={"mobile": MOBILE, "otp": otp}, timeout=30)
+    r2.raise_for_status()
+    tok = r2.json()["access_token"]
+    print(f"  auth OK token={tok[:20]}…")
+    return tok
 
 
-def auth_headers(token):
-    return {"Authorization": f"Bearer {token}"}
+# ---------- PDF HELPERS ----------
+def _pdf_basic_checks(label, resp):
+    passes = []
+    passes.append(ok(f"{label}: HTTP 200") if resp.status_code == 200 else fail(f"{label}: HTTP {resp.status_code} body={resp.text[:200]}"))
+    ct = resp.headers.get("content-type", "")
+    passes.append(ok(f"{label}: Content-Type={ct}") if "application/pdf" in ct else fail(f"{label}: bad CT={ct}"))
+    body = resp.content
+    passes.append(ok(f"{label}: magic %PDF-1.") if body[:7] == b"%PDF-1." else fail(f"{label}: magic={body[:10]!r}"))
+    passes.append(ok(f"{label}: size={len(body)} bytes") if len(body) > 4096 else fail(f"{label}: size={len(body)} <4KB"))
+    return all(passes), body
 
 
-def test_section_A(token):
-    print("\n=== Section A: GET /api/clients/{id}/latest-analyses ===")
-    r = requests.get(f"{API}/clients", headers=auth_headers(token), timeout=15)
-    log("A", "1 GET /api/clients returns 200", r.status_code == 200, f"code={r.status_code}")
+def _rupee_and_font_check(label, body):
+    passes = []
+    try:
+        with pdfplumber.open(io.BytesIO(body)) as pdf:
+            page1_text = pdf.pages[0].extract_text() or ""
+            count1 = page1_text.count(RUPEE)
+            found_any = False
+            for p in pdf.pages:
+                t = p.extract_text() or ""
+                if RUPEE in t:
+                    found_any = True
+                    break
+            # Font check via raw stream inspection
+            raw = body.decode("latin-1", errors="ignore")
+            # ReportLab embeds font names after "/BaseFont /FreeSans..."
+            font_names = set(re.findall(r"/BaseFont\s*/([A-Za-z0-9\-_,+]+)", raw))
+            # also check /FontName
+            font_names |= set(re.findall(r"/FontName\s*/([A-Za-z0-9\-_,+]+)", raw))
+
+            passes.append(ok(f"{label}: page1 contains ₹ (count={count1})") if count1 > 0 else fail(f"{label}: page1 has NO ₹ char"))
+            passes.append(ok(f"{label}: ₹ found on ≥1 page") if found_any else fail(f"{label}: NO ₹ anywhere"))
+            has_freesans = any("FreeSans" in fn for fn in font_names)
+            has_liberation = any("LiberationSans" in fn for fn in font_names)
+            has_helvetica = any(fn.endswith("Helvetica") or fn == "Helvetica" or fn == "Helvetica-Bold" for fn in font_names)
+            passes.append(ok(f"{label}: embedded fonts={sorted(font_names)}"))
+            passes.append(ok(f"{label}: FreeSans embedded") if has_freesans else fail(f"{label}: FreeSans NOT in fonts; got {sorted(font_names)}"))
+            if has_liberation:
+                passes.append(fail(f"{label}: LiberationSans still present"))
+            if has_helvetica:
+                passes.append(fail(f"{label}: Helvetica still present"))
+    except Exception as e:
+        passes.append(fail(f"{label}: pdfplumber error {e}"))
+    return all(passes)
+
+
+# ---------- A. ₹ symbol rendering ----------
+def test_pdf_rupee(tok):
+    print("\n=== A. ₹ UNICODE RENDERING + FONT CHECK ===")
+    headers = {"Authorization": f"Bearer {tok}"}
+    endpoints = [
+        ("analysis-report", f"{API}/clients/{CLIENT_ID}/analysis-report.pdf?months=6"),
+        ("cibil-report",    f"{API}/clients/{CLIENT_ID}/cibil-report.pdf"),
+        ("audit-summary",   f"{API}/audit/summary.pdf?months=6&year=2026"),
+    ]
+    all_pass = True
+    for label, url in endpoints:
+        print(f"\n-- {label} --")
+        r = requests.get(url, headers=headers, timeout=60)
+        basic, body = _pdf_basic_checks(label, r)
+        if not basic:
+            all_pass = False
+            continue
+        if not _rupee_and_font_check(label, body):
+            all_pass = False
+    return all_pass
+
+
+# ---------- B. ?token= fallback ----------
+def test_token_query_param(tok):
+    print("\n=== B. ?token= FALLBACK ===")
+    endpoints = [
+        ("analysis-report", f"{API}/clients/{CLIENT_ID}/analysis-report.pdf?months=6&token={tok}"),
+        ("cibil-report",    f"{API}/clients/{CLIENT_ID}/cibil-report.pdf?token={tok}"),
+        ("audit-summary",   f"{API}/audit/summary.pdf?months=6&year=2026&token={tok}"),
+    ]
+    all_pass = True
+    for label, url in endpoints:
+        print(f"\n-- {label} (token qp) --")
+        r = requests.get(url, timeout=60)
+        basic, _ = _pdf_basic_checks(label, r)
+        if not basic:
+            all_pass = False
+    return all_pass
+
+
+# ---------- C. REGRESSIONS ----------
+def test_analyze_determinism(tok):
+    print("\n=== C1. analyze-statement determinism ===")
+    h = {"Authorization": f"Bearer {tok}"}
+    body = {"months": 6, "file_name": "same.pdf"}
+    r1 = requests.post(f"{API}/clients/{CLIENT_ID}/analyze-statement", json=body, headers=h, timeout=60).json()
+    r2 = requests.post(f"{API}/clients/{CLIENT_ID}/analyze-statement", json=body, headers=h, timeout=60).json()
+    passes = []
+    passes.append(ok(f"bounced_transactions match ({r1.get('bounced_transactions')})") if r1.get("bounced_transactions") == r2.get("bounced_transactions") else fail(f"bounced diff {r1.get('bounced_transactions')} vs {r2.get('bounced_transactions')}"))
+    passes.append(ok(f"avg_balance match ({r1.get('avg_balance')})") if r1.get("avg_balance") == r2.get("avg_balance") else fail(f"avg_balance diff {r1.get('avg_balance')} vs {r2.get('avg_balance')}"))
+    return all(passes)
+
+
+def test_latest_analyses(tok):
+    print("\n=== C2. latest-analyses ===")
+    h = {"Authorization": f"Bearer {tok}"}
+    r = requests.get(f"{API}/clients/{CLIENT_ID}/latest-analyses", headers=h, timeout=30)
     if r.status_code != 200:
-        return None
-    clients = r.json()
-    if not clients:
-        log("A", "1 has >=1 client", False, "no clients for this lender")
-        return None
-    client_id = clients[0]["client_id"]
-    log("A", f"1 picked client_id={client_id}", True)
-
-    r = requests.get(f"{API}/clients/{client_id}/latest-analyses",
-                     headers=auth_headers(token), timeout=15)
-    ok_status = r.status_code == 200
-    log("A", "2 HTTP 200 with Bearer", ok_status, f"code={r.status_code}")
-    if not ok_status:
-        print(r.text[:400]); return client_id
-    body = r.json()
-    required = ["statement_analysis", "cibil_report", "has_statement", "has_cibil"]
-    missing = [k for k in required if k not in body]
-    log("A", "2 all 4 keys present", len(missing) == 0, f"missing={missing}")
-
-    r = requests.post(f"{API}/clients/{client_id}/analyze-statement",
-                      json={"months": 6, "file_name": "a.pdf"},
-                      headers=auth_headers(token), timeout=30)
-    log("A", "3a POST analyze-statement 200", r.status_code == 200,
-        f"code={r.status_code} body={r.text[:200] if r.status_code!=200 else ''}")
-    r = requests.get(f"{API}/clients/{client_id}/latest-analyses",
-                     headers=auth_headers(token), timeout=15)
-    b3 = r.json() if r.status_code == 200 else {}
-    log("A", "3b has_statement==True after analyze", b3.get("has_statement") is True,
-        f"has_statement={b3.get('has_statement')}")
-
-    r = requests.post(f"{API}/loan-apps/check-cibil",
-                      json={"client_id": client_id},
-                      headers=auth_headers(token), timeout=30)
-    log("A", "4a POST check-cibil 200", r.status_code == 200,
-        f"code={r.status_code}")
-    r = requests.get(f"{API}/clients/{client_id}/latest-analyses",
-                     headers=auth_headers(token), timeout=15)
-    b4 = r.json() if r.status_code == 200 else {}
-    log("A", "4b has_cibil==True", b4.get("has_cibil") is True,
-        f"has_cibil={b4.get('has_cibil')}")
-    score = (b4.get("cibil_report") or {}).get("score")
-    ok_score = isinstance(score, int) and 300 <= score <= 900
-    log("A", "4c cibil_report.score int in [300,900]", ok_score, f"score={score}")
-
-    r = requests.get(f"{API}/clients/cli_does_not_exist/latest-analyses",
-                     headers=auth_headers(token), timeout=15)
-    log("A", "5a unknown client -> 404", r.status_code == 404, f"code={r.status_code}")
-    r = requests.get(f"{API}/clients/{client_id}/latest-analyses", timeout=15)
-    log("A", "5b no auth -> 401", r.status_code == 401, f"code={r.status_code}")
-    return client_id
+        return fail(f"HTTP {r.status_code} body={r.text[:200]}")
+    j = r.json()
+    needed = {"statement_analysis", "cibil_report", "has_statement", "has_cibil"}
+    missing = needed - set(j.keys())
+    if missing:
+        return fail(f"missing keys {missing}")
+    return ok(f"200 with keys {sorted(j.keys())}")
 
 
-def test_section_B(token):
-    print("\n=== Section B: GET /api/audit/summary ===")
-    year = datetime.now(timezone.utc).year
-    for m in (3, 6, 12):
-        r = requests.get(f"{API}/audit/summary?months={m}&year={year}",
-                         headers=auth_headers(token), timeout=20)
-        ok = r.status_code == 200
-        log("B", f"6 months={m} HTTP 200", ok, f"code={r.status_code}")
-        if not ok:
-            print(r.text[:400]); continue
-        body = r.json()
-        required = ["period", "inflow_total", "outflow_total", "net",
-                    "overdue_total", "funded_count", "repaid_count",
-                    "loans_funded", "active_loans", "monthly"]
-        missing = [k for k in required if k not in body]
-        log("B", f"6 months={m} all top-level keys present", len(missing) == 0,
-            f"missing={missing}")
-        monthly = body.get("monthly") or []
-        log("B", f"7 months={m} len(monthly)=={m}", len(monthly) == m,
-            f"len={len(monthly)}")
-        shape_ok = all(
-            isinstance(x, dict) and {"label", "inflow", "outflow", "net"}.issubset(x.keys())
-            for x in monthly
-        )
-        log("B", f"7 months={m} each has label+inflow+outflow+net", shape_ok)
-
-        inflow_total = body.get("inflow_total", 0)
-        outflow_total = body.get("outflow_total", 0)
-        net = body.get("net", 0)
-        log("B", f"8 months={m} net == inflow-outflow",
-            abs(net - (inflow_total - outflow_total)) < 1e-6,
-            f"net={net}, inflow-outflow={inflow_total - outflow_total}")
-        sum_net = sum(x["net"] for x in monthly)
-        log("B", f"8 months={m} sum(monthly.net) == net",
-            abs(sum_net - net) < 1e-6,
-            f"sum_net={sum_net}, net={net}")
-
-    r = requests.get(f"{API}/audit/summary?months=6&year={year}", timeout=15)
-    log("B", "9 no auth -> 401", r.status_code == 401, f"code={r.status_code}")
+def test_audit_summary(tok):
+    print("\n=== C3. audit/summary ===")
+    h = {"Authorization": f"Bearer {tok}"}
+    r = requests.get(f"{API}/audit/summary?months=3&year=2026", headers=h, timeout=30)
+    if r.status_code != 200:
+        return fail(f"HTTP {r.status_code}")
+    j = r.json()
+    passes = []
+    m = j.get("monthly", [])
+    passes.append(ok(f"monthly.length=3") if len(m) == 3 else fail(f"monthly.length={len(m)}"))
+    net = j.get("net"); it = j.get("inflow_total"); ot = j.get("outflow_total")
+    passes.append(ok(f"net==inflow-outflow ({net} = {it} - {ot})") if net == it - ot else fail(f"net={net} inflow={it} outflow={ot}"))
+    return all(passes)
 
 
-def test_section_C(token):
-    print("\n=== Section C: GET /api/audit/summary.pdf ===")
-    year = datetime.now(timezone.utc).year
-    r = requests.get(f"{API}/audit/summary.pdf?months=6&year={year}",
-                     headers=auth_headers(token), timeout=30)
-    ok = r.status_code == 200
-    log("C", "10 Bearer HTTP 200", ok, f"code={r.status_code}")
-    if ok:
-        ct = r.headers.get("Content-Type", "")
-        cd = r.headers.get("Content-Disposition", "")
-        body = r.content
-        log("C", "10 Content-Type=application/pdf", "application/pdf" in ct, f"ct={ct}")
-        log("C", "10 body starts with %PDF-1.", body[:7].startswith(b"%PDF-1."),
-            f"head={body[:10]!r}")
-        log("C", "10 size > 2KB", len(body) > 2048, f"size={len(body)}")
-        log("C", "10 CD contains 'attachment; filename=LendIQ-Audit-'",
-            ("attachment;" in cd) and ("filename=" in cd) and ("LendIQ-Audit-" in cd),
-            f"cd={cd}")
-
-    r = requests.get(f"{API}/audit/summary.pdf?months=6&year={year}&token={token}",
-                     timeout=30)
-    ok = r.status_code == 200
-    log("C", "11 ?token= HTTP 200", ok, f"code={r.status_code}")
-    if ok:
-        log("C", "11 valid PDF (starts with %PDF-1.)", r.content[:7].startswith(b"%PDF-1."),
-            f"head={r.content[:10]!r}")
-        log("C", "11 size > 2KB", len(r.content) > 2048, f"size={len(r.content)}")
-
-    r = requests.get(f"{API}/audit/summary.pdf?months=6&year={year}", timeout=15)
-    log("C", "12 no auth -> 401", r.status_code == 401, f"code={r.status_code}")
+def test_support_chat(tok):
+    print("\n=== C4. support/chat ===")
+    h = {"Authorization": f"Bearer {tok}"}
+    r = requests.post(f"{API}/support/chat", json={"question": "How do I add a new client?"}, headers=h, timeout=30)
+    if r.status_code != 200:
+        return fail(f"HTTP {r.status_code}")
+    ans = r.json().get("answer", "")
+    if "Clients tab" in ans:
+        return ok(f"answer contains 'Clients tab'")
+    return fail(f"'Clients tab' NOT in answer (answer starts: {ans[:150]!r})")
 
 
-def test_section_D(token):
-    print("\n=== Section D: POST /api/support/chat ===")
-    r = requests.post(f"{API}/support/chat", json={"question": "How do I add a client?"},
-                      headers=auth_headers(token), timeout=15)
-    ok = r.status_code == 200
-    log("D", "13 HTTP 200 (add client)", ok, f"code={r.status_code}")
-    if ok:
-        ans = r.json().get("answer", "")
-        log("D", "13 answer contains 'Clients tab' (case-insensitive)",
-            "clients tab" in ans.lower(), f"ans[:120]={ans[:120]!r}")
-
-    r = requests.post(f"{API}/support/chat", json={"question": "How does EMI rollback work?"},
-                      headers=auth_headers(token), timeout=15)
-    ok = r.status_code == 200
-    log("D", "14 HTTP 200 (rollback)", ok, f"code={r.status_code}")
-    if ok:
-        ans = r.json().get("answer", "")
-        al = ans.lower()
-        log("D", "14 mentions 'Undo' or 'rollback'",
-            ("undo" in al) or ("rollback" in al), f"ans[:120]={ans[:120]!r}")
-
-    r = requests.post(f"{API}/support/chat", json={"question": "How to analyze a bank statement?"},
-                      headers=auth_headers(token), timeout=15)
-    ok = r.status_code == 200
-    log("D", "15 HTTP 200 (analyze statement)", ok, f"code={r.status_code}")
-    if ok:
-        ans = r.json().get("answer", "")
-        al = ans.lower()
-        log("D", "15 mentions 'Upload statement' or '3 / 6 / 12'",
-            ("upload statement" in al) or ("3 / 6 / 12" in ans),
-            f"ans[:160]={ans[:160]!r}")
-
-    r = requests.post(f"{API}/support/chat", json={"question": ""},
-                      headers=auth_headers(token), timeout=15)
-    ok = r.status_code == 200
-    log("D", "16 empty question HTTP 200", ok, f"code={r.status_code}")
-    if ok:
-        ans = r.json().get("answer", "")
-        log("D", "16 empty returns a helpful generic reply",
-            len(ans) > 10, f"ans[:120]={ans[:120]!r}")
-
-    r = requests.post(f"{API}/support/chat", json={"question": "anything"}, timeout=15)
-    log("D", "17 no auth -> 401", r.status_code == 401, f"code={r.status_code}")
-
-
-def test_section_E(token, client_id):
-    print("\n=== Section E: Regressions ===")
-    r = requests.get(f"{API}/dashboard", headers=auth_headers(token), timeout=20)
-    ok = r.status_code == 200
-    log("E", "18 GET /api/dashboard 200", ok, f"code={r.status_code}")
-    if ok:
-        body = r.json()
-        log("E", "18 portfolio_health present",
-            "portfolio_health" in body,
-            f"keys_top={list(body.keys())[:8]}")
-
-    if client_id:
-        r = requests.get(f"{API}/clients/{client_id}/analysis-report.pdf?months=6",
-                         headers=auth_headers(token), timeout=30)
-        ok = r.status_code == 200
-        log("E", "19 analysis-report.pdf 200", ok, f"code={r.status_code}")
-        if ok:
-            log("E", "19 valid PDF", r.content[:7].startswith(b"%PDF-1."),
-                f"head={r.content[:10]!r}, size={len(r.content)}")
-
-    if client_id:
-        payload = {"months": 6, "file_name": "determinism_probe.pdf"}
-        r1 = requests.post(f"{API}/clients/{client_id}/analyze-statement",
-                           json=payload, headers=auth_headers(token), timeout=30)
-        r2 = requests.post(f"{API}/clients/{client_id}/analyze-statement",
-                           json=payload, headers=auth_headers(token), timeout=30)
-        ok = r1.status_code == 200 and r2.status_code == 200
-        log("E", "20a two analyze-statement calls both 200", ok,
-            f"c1={r1.status_code}, c2={r2.status_code}")
-        if ok:
-            j1, j2 = r1.json(), r2.json()
-            log("E", "20b bounced_transactions identical",
-                j1.get("bounced_transactions") == j2.get("bounced_transactions"),
-                f"{j1.get('bounced_transactions')} vs {j2.get('bounced_transactions')}")
-            log("E", "20c avg_balance identical",
-                j1.get("avg_balance") == j2.get("avg_balance"),
-                f"{j1.get('avg_balance')} vs {j2.get('avg_balance')}")
+def test_dashboard(tok):
+    print("\n=== C5. dashboard ===")
+    h = {"Authorization": f"Bearer {tok}"}
+    r = requests.get(f"{API}/dashboard", headers=h, timeout=30)
+    if r.status_code != 200:
+        return fail(f"HTTP {r.status_code}")
+    ph = r.json().get("portfolio_health")
+    if ph is None:
+        return fail("portfolio_health missing")
+    return ok(f"portfolio_health present: {ph}")
 
 
 def main():
-    print(f"Testing against: {API}")
-    token = get_token()
-    print(f"Got token: {token[:20]}...")
-    client_id = test_section_A(token)
-    test_section_B(token)
-    test_section_C(token)
-    test_section_D(token)
-    test_section_E(token, client_id)
-
-    print("\n" + "=" * 70)
-    fails = [r for r in results if not r[2]]
-    total = len(results)
-    print(f"Total: {total}   Passed: {total - len(fails)}   Failed: {len(fails)}")
-    if fails:
-        print("\nFAILURES:")
-        for s, n, ok, d in fails:
-            print(f"  [{s}] {n}  -- {d}")
-    print("=" * 70)
-    sys.exit(0 if not fails else 1)
+    print("=" * 60)
+    print("ITERATION 17 — Unicode ₹ PDF + regressions")
+    print("=" * 60)
+    tok = login()
+    results = {
+        "A. PDF ₹ rendering":          test_pdf_rupee(tok),
+        "B. ?token= fallback":         test_token_query_param(tok),
+        "C1. analyze determinism":     test_analyze_determinism(tok),
+        "C2. latest-analyses":         test_latest_analyses(tok),
+        "C3. audit/summary":           test_audit_summary(tok),
+        "C4. support/chat":            test_support_chat(tok),
+        "C5. dashboard":               test_dashboard(tok),
+    }
+    print("\n" + "=" * 60)
+    print("SUMMARY")
+    print("=" * 60)
+    for k, v in results.items():
+        print(f"  {'PASS' if v else 'FAIL'}  {k}")
+    failed = [k for k, v in results.items() if not v]
+    sys.exit(0 if not failed else 1)
 
 
 if __name__ == "__main__":

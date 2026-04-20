@@ -30,6 +30,36 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret")
 JWT_ALG = "HS256"
 JWT_EXP_DAYS = 7
 
+# Register Unicode fonts globally so all PDF endpoints correctly render ₹, ₨,
+# accented characters, and em-dashes. reportlab's built-in Helvetica and the
+# system LiberationSans both LACK the U+20B9 ₹ glyph — we use GNU FreeSans
+# (/usr/share/fonts/truetype/freefont/) which has full Indian Rupee coverage.
+try:
+    from reportlab.pdfbase import pdfmetrics as _pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont as _TTFont
+    _FONT_DIR = "/usr/share/fonts/truetype/freefont"
+    if Path(f"{_FONT_DIR}/FreeSans.ttf").exists():
+        _pdfmetrics.registerFont(_TTFont("LendiqSans",           f"{_FONT_DIR}/FreeSans.ttf"))
+        _pdfmetrics.registerFont(_TTFont("LendiqSans-Bold",      f"{_FONT_DIR}/FreeSansBold.ttf"))
+        _pdfmetrics.registerFont(_TTFont("LendiqSans-Italic",    f"{_FONT_DIR}/FreeSansOblique.ttf"))
+        _pdfmetrics.registerFont(_TTFont("LendiqSans-BoldItalic", f"{_FONT_DIR}/FreeSansBoldOblique.ttf"))
+        from reportlab.pdfbase.pdfmetrics import registerFontFamily as _rff
+        _rff("LendiqSans", normal="LendiqSans", bold="LendiqSans-Bold",
+             italic="LendiqSans-Italic", boldItalic="LendiqSans-BoldItalic")
+        # Remap the default "Helvetica" names so existing PDF code (which passes
+        # "Helvetica-Bold" to TableStyle) picks up the Rupee-capable face.
+        try:
+            _pdfmetrics.registerFont(_TTFont("Helvetica",             f"{_FONT_DIR}/FreeSans.ttf"))
+            _pdfmetrics.registerFont(_TTFont("Helvetica-Bold",        f"{_FONT_DIR}/FreeSansBold.ttf"))
+            _pdfmetrics.registerFont(_TTFont("Helvetica-Oblique",     f"{_FONT_DIR}/FreeSansOblique.ttf"))
+            _pdfmetrics.registerFont(_TTFont("Helvetica-BoldOblique", f"{_FONT_DIR}/FreeSansBoldOblique.ttf"))
+        except Exception:
+            pass
+except Exception as _e:
+    logging.getLogger(__name__).warning(f"Could not register Unicode PDF fonts: {_e}")
+
+
+
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 

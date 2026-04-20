@@ -1,6 +1,7 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as Linking from "expo-linking";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { AuthProvider, useAuth } from "../src/auth";
 import { DialogProvider } from "../src/dialog";
 import { I18nProvider } from "../src/i18n";
@@ -13,6 +14,19 @@ function AuthGate() {
   const { user, loading, googleExchange } = useAuth();
   const segments = useSegments();
   const router = useRouter();
+  const [onboarded, setOnboarded] = useState<boolean | null>(null);
+
+  // First-run onboarding check
+  useEffect(() => {
+    (async () => {
+      try {
+        const v = await AsyncStorage.getItem("lendiq_onboarded");
+        setOnboarded(v === "1");
+      } catch {
+        setOnboarded(true);
+      }
+    })();
+  }, []);
 
   // Handle Emergent Google auth return with #session_id= in URL hash (web preview)
   useEffect(() => {
@@ -42,16 +56,19 @@ function AuthGate() {
   }, []);
 
   useEffect(() => {
-    if (loading) return;
+    if (loading || onboarded === null) return;
     const inAuth = segments[0] === undefined || segments[0] === "index";
-    if (!user && !inAuth) {
+    const onOnboarding = segments[0] === "onboarding";
+    if (!onboarded && !onOnboarding) {
+      router.replace("/onboarding" as any);
+    } else if (onboarded && !user && !inAuth) {
       router.replace("/");
-    } else if (user && inAuth) {
+    } else if (onboarded && user && (inAuth || onOnboarding)) {
       router.replace("/(tabs)/dashboard");
     }
-  }, [user, loading, segments]);
+  }, [user, loading, segments, onboarded]);
 
-  if (loading) {
+  if (loading || onboarded === null) {
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: Colors.bg }}>
         <ActivityIndicator size="large" color={Colors.primary} />
@@ -62,6 +79,7 @@ function AuthGate() {
   return (
     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: Colors.bg } }}>
       <Stack.Screen name="index" />
+      <Stack.Screen name="onboarding" options={{ headerShown: false }} />
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="application/[id]" options={{ presentation: "card" }} />
       <Stack.Screen name="loan/[id]" options={{ presentation: "card" }} />

@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import {
   View, Text, StyleSheet, ScrollView, RefreshControl, TouchableOpacity,
 } from "react-native";
@@ -25,6 +25,14 @@ type Stats = {
   outflow_chart: { label: string; value: number }[];
 };
 
+type Txn = {
+  transaction_id: string;
+  amount: number;
+  type: string;
+  description: string;
+  created_at: string;
+};
+
 function money(n: number) {
   if (n >= 100000) return `₹${(n / 100000).toFixed(1)}L`;
   if (n >= 1000) return `₹${(n / 1000).toFixed(1)}k`;
@@ -35,14 +43,30 @@ export default function Dashboard() {
   const { user } = useAuth();
   const router = useRouter();
   const [stats, setStats] = useState<Stats | null>(null);
+  const [txns, setTxns] = useState<Txn[]>([]);
+  const [txnTab, setTxnTab] = useState<"all" | "credit" | "debit" | "high">("all");
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
-    try { setStats(await api<Stats>("/dashboard")); }
-    catch (e) { console.log("dashboard err", e); }
+    try {
+      const [s, t] = await Promise.all([
+        api<Stats>("/dashboard"),
+        api<Txn[]>("/transactions"),
+      ]);
+      setStats(s);
+      setTxns(t || []);
+    } catch (e) { console.log("dashboard err", e); }
   }, []);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  const filteredTxns = useMemo(() => {
+    let list = [...txns];
+    if (txnTab === "credit") list = list.filter((t) => t.amount >= 0);
+    else if (txnTab === "debit") list = list.filter((t) => t.amount < 0);
+    else if (txnTab === "high") list = list.filter((t) => Math.abs(t.amount) >= 50000);
+    return list.slice(0, 10);
+  }, [txns, txnTab]);
 
   const maxIn = Math.max(1, ...(stats?.inflow_chart.map((c) => c.value) || [1]));
   const maxOut = Math.max(1, ...(stats?.outflow_chart.map((c) => c.value) || [1]));
@@ -148,6 +172,54 @@ export default function Dashboard() {
           </View>
         </Card>
 
+        {/* Recent Transactions */}
+        <Card style={{ marginTop: Spacing.md }}>
+          <View style={styles.chartHeader}>
+            <Ionicons name="receipt" size={18} color={Colors.primary} />
+            <Text style={styles.chartTitle}>Recent transactions</Text>
+          </View>
+          <View style={styles.txnTabs}>
+            {([
+              { k: "all", label: "All" },
+              { k: "credit", label: "Credits" },
+              { k: "debit", label: "Debits" },
+              { k: "high", label: "High Value" },
+            ] as const).map((t) => (
+              <TouchableOpacity
+                key={t.k}
+                testID={`txn-tab-${t.k}`}
+                style={[styles.txnTab, txnTab === t.k && styles.txnTabActive]}
+                onPress={() => setTxnTab(t.k)}
+              >
+                <Text style={[styles.txnTabText, txnTab === t.k && styles.txnTabTextActive]}>{t.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          {filteredTxns.length === 0 ? (
+            <Text style={styles.txnEmpty}>No transactions yet.</Text>
+          ) : (
+            filteredTxns.map((t) => {
+              const credit = t.amount >= 0;
+              const iconBg = credit ? Colors.success + "1A" : Colors.danger + "1A";
+              const iconColor = credit ? Colors.success : Colors.danger;
+              return (
+                <View key={t.transaction_id} style={styles.txnRow}>
+                  <View style={[styles.txnIcon, { backgroundColor: iconBg }]}>
+                    <Ionicons name={credit ? "arrow-down" : "arrow-up"} size={16} color={iconColor} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.txnTitle} numberOfLines={1}>{t.description}</Text>
+                    <Text style={styles.txnDate}>{new Date(t.created_at).toLocaleDateString()}</Text>
+                  </View>
+                  <Text style={[styles.txnAmt, { color: iconColor }]}>
+                    {credit ? "+" : "-"}{money(Math.abs(t.amount))}
+                  </Text>
+                </View>
+              );
+            })
+          )}
+        </Card>
+
         <View style={{ height: Spacing.xl }} />
       </ScrollView>
     </SafeAreaView>
@@ -204,11 +276,24 @@ const styles = StyleSheet.create({
   statValue: { fontSize: 20, fontWeight: "800", color: Colors.textPrimary },
   statLabel: { color: Colors.textSecondary, fontSize: 12, marginTop: 2 },
   chartHeader: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: Spacing.sm },
+  chartTitle: { fontSize: 15, fontWeight: "800", color: Colors.textPrimary, flex: 1 },
   sectionTitle: { fontSize: 15, fontWeight: "800", color: Colors.textPrimary },
   chart: { flexDirection: "row", alignItems: "flex-end", gap: 10, height: 120 },
   barCol: { flex: 1, alignItems: "center", gap: 6 },
   bar: { width: "100%", borderTopLeftRadius: 8, borderTopRightRadius: 8, minHeight: 6 },
   barLabel: { fontSize: 11, color: Colors.textMuted, fontWeight: "600" },
+
+  txnTabs: { flexDirection: "row", gap: 6, marginBottom: 10 },
+  txnTab: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, backgroundColor: Colors.bgAlt, borderWidth: 1, borderColor: Colors.borderLight },
+  txnTabActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  txnTabText: { fontSize: 11, fontWeight: "700", color: Colors.textSecondary, letterSpacing: 0.3 },
+  txnTabTextActive: { color: "#fff" },
+  txnEmpty: { color: Colors.textMuted, textAlign: "center", paddingVertical: 20, fontSize: 13 },
+  txnRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.borderLight },
+  txnIcon: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center" },
+  txnTitle: { fontSize: 13, fontWeight: "700", color: Colors.textPrimary },
+  txnDate: { fontSize: 11, color: Colors.textMuted, marginTop: 2 },
+  txnAmt: { fontSize: 13, fontWeight: "800" },
 
   healthCard: {
     backgroundColor: Colors.surface, borderRadius: Radii.lg,
