@@ -463,10 +463,96 @@ backend:
 
           No backend code modified. Test script: /app/backend_test.py.
 
+  - task: "Latest analyses endpoint (iteration 16)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Iteration-16 Section A — 10/10 PASS on live backend (lender 9876543210, client cli_seed_000).
+          GET /api/clients/{id}/latest-analyses:
+            • Bearer → HTTP 200 with all 4 keys {statement_analysis, cibil_report, has_statement, has_cibil}.
+            • After POST /api/clients/{id}/analyze-statement (months=6, file_name='a.pdf') → has_statement=True.
+            • After POST /api/loan-apps/check-cibil → has_cibil=True AND cibil_report.score=742 (int ∈ [300,900]).
+            • Unknown client_id cli_does_not_exist → HTTP 404.
+            • No Authorization header → HTTP 401.
+
+  - task: "Audit summary endpoint (iteration 16)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Iteration-16 Section B — 19/19 PASS.
+          GET /api/audit/summary?months=<3|6|12>&year=2026:
+            • All 3 windows return HTTP 200 with ALL required top-level keys:
+              period, inflow_total, outflow_total, net, overdue_total, funded_count,
+              repaid_count, loans_funded, active_loans, monthly.
+            • monthly length exactly matches months (3→3, 6→6, 12→12).
+            • Every monthly entry has {label, inflow, outflow, net}.
+            • net == inflow_total - outflow_total for all 3 windows.
+            • sum(monthly[i].net) == net for all 3 windows.
+            • Concrete values verified on lender: months=6 → net=-1,261,600 == inflow(2,690,000) - outflow(3,951,600) and sum-of-monthly = -1,261,600.
+            • No Authorization header → HTTP 401.
+
+  - task: "Audit summary PDF endpoint (iteration 16)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Iteration-16 Section C — 9/9 PASS.
+          GET /api/audit/summary.pdf?months=6&year=2026:
+            • Bearer → HTTP 200, Content-Type=application/pdf, magic=b'%PDF-1.4',
+              size=2934 bytes (>2KB), Content-Disposition='attachment; filename="LendIQ-Audit-Nov2025-to-Apr2026.pdf"'.
+            • ?token=<jwt> fallback (no Authorization) → HTTP 200, valid PDF (%PDF-1.4), 2934 bytes.
+            • No auth at all → HTTP 401.
+
+  - task: "Support chat endpoint (iteration 16)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Iteration-16 Section D — 8/9 PASS (1 minor cosmetic fail).
+          POST /api/support/chat:
+            • "How does EMI rollback work?" → 200; answer mentions 'Undo' and 'rollback'. PASS
+            • "How to analyze a bank statement?" → 200; answer contains 'Upload statement' AND '3 / 6 / 12'. PASS
+            • Empty question "" → 200 with helpful generic reply "Please ask a question — e.g. 'How do I add a client?'". PASS
+            • No auth → HTTP 401. PASS
+          Minor: "How do I add a client?" → 200; answer is
+             "To add a new client:\\n1. Go to the **Clients** tab at the bottom. ..."
+             — semantically references the Clients tab, but the literal substring
+             "Clients tab" is broken by markdown bold markers ("**Clients** tab"),
+             so the strict case-insensitive substring check "clients tab" in answer
+             does NOT match. If the review agent's contract requires the bare
+             substring, change "**Clients** tab" → "**Clients tab**" (or remove the
+             asterisks) in server.py:2908. Otherwise functionally correct.
+
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 8
+  test_sequence: 9
 
 test_plan:
   current_focus: []

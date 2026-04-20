@@ -1,390 +1,281 @@
-"""Iteration-14 backend regression tests.
-
-Scope (per review request):
-  A. Determinism + month-slice consistency for POST /api/clients/{id}/analyze-statement
-  B. Transparent risk engine (risk_reasons, parse_confidence, etc.)
-  C. Bounce-keyword detection on real PDF bytes
-  D. Branded PDF endpoints (analysis-report.pdf, cibil-report.pdf) with ?token= fallback
-  E. Regressions (/dashboard portfolio_health ints, /loans)
-
-Run against the live preview backend. Does NOT modify any backend code.
 """
-from __future__ import annotations
+Iteration-16 backend tests — verify the 3 NEW endpoints and regressions.
 
-import base64
-import io
-import json
-import os
-import random
-import sys
-import textwrap
-from typing import Any, Dict, List, Optional, Tuple
-
+A. GET /api/clients/{client_id}/latest-analyses
+B. GET /api/audit/summary
+C. GET /api/audit/summary.pdf
+D. POST /api/support/chat
+E. Regressions (dashboard, analysis-report.pdf, analyze-statement determinism)
+"""
+import os, sys, json, time
+from datetime import datetime, timezone
 import requests
 
-BASE = "https://lending-hub-63.preview.emergentagent.com/api"
+BASE = os.environ.get(
+    "BACKEND_URL",
+    "https://lending-hub-63.preview.emergentagent.com",
+).rstrip("/")
+API = f"{BASE}/api"
 MOBILE = "9876543210"
 
-
-# ---------- helpers ----------
-def hdr(tok: Optional[str] = None) -> Dict[str, str]:
-    return {"Authorization": f"Bearer {tok}"} if tok else {}
+results = []  # list of (section, name, ok, detail)
 
 
-def _die(msg: str) -> None:
-    print(f"\nFATAL: {msg}")
-    sys.exit(1)
+def log(section, name, ok, detail=""):
+    status = "PASS" if ok else "FAIL"
+    print(f"[{status}] {section} :: {name}  {detail}")
+    results.append((section, name, ok, detail))
 
 
-def login() -> str:
-    r = requests.post(f"{BASE}/auth/send-otp", json={"mobile": MOBILE, "purpose": "login"}, timeout=30)
-    if r.status_code != 200:
-        _die(f"send-otp failed: {r.status_code} {r.text}")
+def get_token():
+    r = requests.post(f"{API}/auth/send-otp", json={"mobile": MOBILE, "purpose": "login"}, timeout=15)
+    assert r.status_code == 200, f"send-otp failed: {r.status_code} {r.text}"
     otp = r.json().get("demo_otp")
-    if not otp:
-        _die(f"no demo_otp in response: {r.json()}")
-    r2 = requests.post(f"{BASE}/auth/verify-otp", json={"mobile": MOBILE, "otp": otp}, timeout=30)
-    if r2.status_code != 200:
-        _die(f"verify-otp failed: {r2.status_code} {r2.text}")
+    assert otp, "No demo_otp in response"
+    r2 = requests.post(f"{API}/auth/verify-otp", json={"mobile": MOBILE, "otp": otp}, timeout=15)
+    assert r2.status_code == 200, f"verify-otp failed: {r2.status_code} {r2.text}"
     return r2.json()["access_token"]
 
 
-# ---------- running ----------
-FAIL: List[str] = []
-PASS: List[str] = []
+def auth_headers(token):
+    return {"Authorization": f"Bearer {token}"}
 
 
-def check(cond: bool, label: str, detail: str = "") -> bool:
-    if cond:
-        PASS.append(label)
-        print(f"  [PASS] {label}")
-    else:
-        FAIL.append(f"{label} — {detail}")
-        print(f"  [FAIL] {label} — {detail}")
-    return cond
-
-
-def section(name: str) -> None:
-    print(f"\n=== {name} ===")
-
-
-# ---------- A. Determinism + month-slice ----------
-def analyze(tok: str, cid: str, months: int, file_name: str = "foo.pdf", file_b64: Optional[str] = None) -> Dict[str, Any]:
-    body: Dict[str, Any] = {"months": months, "file_name": file_name}
-    if file_b64 is not None:
-        body["file_base64"] = file_b64
-    r = requests.post(f"{BASE}/clients/{cid}/analyze-statement", headers=hdr(tok), json=body, timeout=90)
+def test_section_A(token):
+    print("\n=== Section A: GET /api/clients/{id}/latest-analyses ===")
+    r = requests.get(f"{API}/clients", headers=auth_headers(token), timeout=15)
+    log("A", "1 GET /api/clients returns 200", r.status_code == 200, f"code={r.status_code}")
     if r.status_code != 200:
-        return {"__error__": True, "status": r.status_code, "text": r.text[:300]}
-    return r.json()
+        return None
+    clients = r.json()
+    if not clients:
+        log("A", "1 has >=1 client", False, "no clients for this lender")
+        return None
+    client_id = clients[0]["client_id"]
+    log("A", f"1 picked client_id={client_id}", True)
+
+    r = requests.get(f"{API}/clients/{client_id}/latest-analyses",
+                     headers=auth_headers(token), timeout=15)
+    ok_status = r.status_code == 200
+    log("A", "2 HTTP 200 with Bearer", ok_status, f"code={r.status_code}")
+    if not ok_status:
+        print(r.text[:400]); return client_id
+    body = r.json()
+    required = ["statement_analysis", "cibil_report", "has_statement", "has_cibil"]
+    missing = [k for k in required if k not in body]
+    log("A", "2 all 4 keys present", len(missing) == 0, f"missing={missing}")
+
+    r = requests.post(f"{API}/clients/{client_id}/analyze-statement",
+                      json={"months": 6, "file_name": "a.pdf"},
+                      headers=auth_headers(token), timeout=30)
+    log("A", "3a POST analyze-statement 200", r.status_code == 200,
+        f"code={r.status_code} body={r.text[:200] if r.status_code!=200 else ''}")
+    r = requests.get(f"{API}/clients/{client_id}/latest-analyses",
+                     headers=auth_headers(token), timeout=15)
+    b3 = r.json() if r.status_code == 200 else {}
+    log("A", "3b has_statement==True after analyze", b3.get("has_statement") is True,
+        f"has_statement={b3.get('has_statement')}")
+
+    r = requests.post(f"{API}/loan-apps/check-cibil",
+                      json={"client_id": client_id},
+                      headers=auth_headers(token), timeout=30)
+    log("A", "4a POST check-cibil 200", r.status_code == 200,
+        f"code={r.status_code}")
+    r = requests.get(f"{API}/clients/{client_id}/latest-analyses",
+                     headers=auth_headers(token), timeout=15)
+    b4 = r.json() if r.status_code == 200 else {}
+    log("A", "4b has_cibil==True", b4.get("has_cibil") is True,
+        f"has_cibil={b4.get('has_cibil')}")
+    score = (b4.get("cibil_report") or {}).get("score")
+    ok_score = isinstance(score, int) and 300 <= score <= 900
+    log("A", "4c cibil_report.score int in [300,900]", ok_score, f"score={score}")
+
+    r = requests.get(f"{API}/clients/cli_does_not_exist/latest-analyses",
+                     headers=auth_headers(token), timeout=15)
+    log("A", "5a unknown client -> 404", r.status_code == 404, f"code={r.status_code}")
+    r = requests.get(f"{API}/clients/{client_id}/latest-analyses", timeout=15)
+    log("A", "5b no auth -> 401", r.status_code == 401, f"code={r.status_code}")
+    return client_id
 
 
-def test_section_A(tok: str) -> None:
-    section("A. DETERMINISM + MONTH-SLICE CONSISTENCY")
-    cid = "cli_seed_000"
-    fn = "foo.pdf"
-
-    # A1 — determinism
-    a = analyze(tok, cid, 3, fn)
-    b = analyze(tok, cid, 3, fn)
-    if a.get("__error__") or b.get("__error__"):
-        check(False, "A1 determinism (months=3 twice)", f"a={a} b={b}")
-    else:
-        keys = ["bounced_transactions", "avg_balance", "total_credit", "total_debit",
-                "avg_monthly_credit", "bounce_risk", "parse_source"]
-        diffs = [k for k in keys if a.get(k) != b.get(k)]
-        check(
-            not diffs,
-            "A1 determinism: same (client, file_name, months) → identical key values",
-            f"diffs={diffs} a={ {k:a.get(k) for k in keys} } b={ {k:b.get(k) for k in keys} }",
+def test_section_B(token):
+    print("\n=== Section B: GET /api/audit/summary ===")
+    year = datetime.now(timezone.utc).year
+    for m in (3, 6, 12):
+        r = requests.get(f"{API}/audit/summary?months={m}&year={year}",
+                         headers=auth_headers(token), timeout=20)
+        ok = r.status_code == 200
+        log("B", f"6 months={m} HTTP 200", ok, f"code={r.status_code}")
+        if not ok:
+            print(r.text[:400]); continue
+        body = r.json()
+        required = ["period", "inflow_total", "outflow_total", "net",
+                    "overdue_total", "funded_count", "repaid_count",
+                    "loans_funded", "active_loans", "monthly"]
+        missing = [k for k in required if k not in body]
+        log("B", f"6 months={m} all top-level keys present", len(missing) == 0,
+            f"missing={missing}")
+        monthly = body.get("monthly") or []
+        log("B", f"7 months={m} len(monthly)=={m}", len(monthly) == m,
+            f"len={len(monthly)}")
+        shape_ok = all(
+            isinstance(x, dict) and {"label", "inflow", "outflow", "net"}.issubset(x.keys())
+            for x in monthly
         )
+        log("B", f"7 months={m} each has label+inflow+outflow+net", shape_ok)
 
-    # A2 — month-slice consistency
-    a6 = analyze(tok, cid, 6, fn)
-    a12 = analyze(tok, cid, 12, fn)
-    if any(x.get("__error__") for x in (a, a6, a12)):
-        check(False, "A2 slice: 3 vs 6 vs 12", "one of the calls errored")
-    else:
-        chart3 = a["chart"]
-        chart6 = a6["chart"]
-        chart12 = a12["chart"]
+        inflow_total = body.get("inflow_total", 0)
+        outflow_total = body.get("outflow_total", 0)
+        net = body.get("net", 0)
+        log("B", f"8 months={m} net == inflow-outflow",
+            abs(net - (inflow_total - outflow_total)) < 1e-6,
+            f"net={net}, inflow-outflow={inflow_total - outflow_total}")
+        sum_net = sum(x["net"] for x in monthly)
+        log("B", f"8 months={m} sum(monthly.net) == net",
+            abs(sum_net - net) < 1e-6,
+            f"sum_net={sum_net}, net={net}")
 
-        def subset_last(big: List[dict], small: List[dict]) -> Tuple[bool, str]:
-            if len(small) > len(big):
-                return False, f"small({len(small)})>big({len(big)})"
-            tail = big[-len(small):]
-            for i, (b_, s_) in enumerate(zip(tail, small)):
-                for k in ("label", "credit", "debit", "bounces"):
-                    if b_.get(k) != s_.get(k):
-                        return False, f"idx {i} key {k}: big={b_.get(k)} small={s_.get(k)}"
-            return True, "ok"
-
-        ok36, why36 = subset_last(chart6, chart3)
-        ok612, why612 = subset_last(chart12, chart6)
-        check(len(chart3) == 3 and len(chart6) == 6 and len(chart12) == 12,
-              "A2 chart lengths match months", f"{len(chart3)}/{len(chart6)}/{len(chart12)}")
-        check(ok36, "A2 chart(3) == last 3 of chart(6)", why36)
-        check(ok612, "A2 chart(6) == last 6 of chart(12)", why612)
-
-        # A3 — bounces monotonic + equals sum(chart[i].bounces)
-        bb3 = a["bounced_transactions"]
-        bb6 = a6["bounced_transactions"]
-        bb12 = a12["bounced_transactions"]
-        sum3 = sum(c["bounces"] for c in chart3)
-        sum6 = sum(c["bounces"] for c in chart6)
-        sum12 = sum(c["bounces"] for c in chart12)
-        check(bb12 >= bb6 >= bb3,
-              "A3 bounces monotonic across windows (12>=6>=3)",
-              f"{bb3}/{bb6}/{bb12}")
-        check(bb3 == sum3 and bb6 == sum6 and bb12 == sum12,
-              "A3 bounced_transactions == sum(chart[i].bounces)",
-              f"top={bb3}/{bb6}/{bb12} sum={sum3}/{sum6}/{sum12}")
-
-    # A4 — different file_name → different universe
-    alpha = analyze(tok, cid, 6, "alpha.pdf")
-    beta = analyze(tok, cid, 6, "beta.pdf")
-    if alpha.get("__error__") or beta.get("__error__"):
-        check(False, "A4 different file_name → different universe", "error")
-    else:
-        check(
-            alpha["avg_balance"] != beta["avg_balance"],
-            "A4 alpha.pdf vs beta.pdf → different avg_balance",
-            f"alpha={alpha['avg_balance']} beta={beta['avg_balance']}",
-        )
+    r = requests.get(f"{API}/audit/summary?months=6&year={year}", timeout=15)
+    log("B", "9 no auth -> 401", r.status_code == 401, f"code={r.status_code}")
 
 
-# ---------- B. Risk engine ----------
-REQUIRED_TOPLEVEL = [
-    "risk_reasons", "parse_confidence", "parse_source", "rows_extracted",
-    "bounce_matches_found", "months_covered_in_file", "manual_review_recommended",
-]
+def test_section_C(token):
+    print("\n=== Section C: GET /api/audit/summary.pdf ===")
+    year = datetime.now(timezone.utc).year
+    r = requests.get(f"{API}/audit/summary.pdf?months=6&year={year}",
+                     headers=auth_headers(token), timeout=30)
+    ok = r.status_code == 200
+    log("C", "10 Bearer HTTP 200", ok, f"code={r.status_code}")
+    if ok:
+        ct = r.headers.get("Content-Type", "")
+        cd = r.headers.get("Content-Disposition", "")
+        body = r.content
+        log("C", "10 Content-Type=application/pdf", "application/pdf" in ct, f"ct={ct}")
+        log("C", "10 body starts with %PDF-1.", body[:7].startswith(b"%PDF-1."),
+            f"head={body[:10]!r}")
+        log("C", "10 size > 2KB", len(body) > 2048, f"size={len(body)}")
+        log("C", "10 CD contains 'attachment; filename=LendIQ-Audit-'",
+            ("attachment;" in cd) and ("filename=" in cd) and ("LendIQ-Audit-" in cd),
+            f"cd={cd}")
+
+    r = requests.get(f"{API}/audit/summary.pdf?months=6&year={year}&token={token}",
+                     timeout=30)
+    ok = r.status_code == 200
+    log("C", "11 ?token= HTTP 200", ok, f"code={r.status_code}")
+    if ok:
+        log("C", "11 valid PDF (starts with %PDF-1.)", r.content[:7].startswith(b"%PDF-1."),
+            f"head={r.content[:10]!r}")
+        log("C", "11 size > 2KB", len(r.content) > 2048, f"size={len(r.content)}")
+
+    r = requests.get(f"{API}/audit/summary.pdf?months=6&year={year}", timeout=15)
+    log("C", "12 no auth -> 401", r.status_code == 401, f"code={r.status_code}")
 
 
-def test_section_B(tok: str) -> None:
-    section("B. TRANSPARENT RISK ENGINE")
-    cid = "cli_seed_000"
-    res = analyze(tok, cid, 6, "foo.pdf")
-    if res.get("__error__"):
-        check(False, "B5 schema fields present", f"{res}")
-        return
-    missing = [k for k in REQUIRED_TOPLEVEL if k not in res]
-    check(not missing, "B5 all transparency fields present", f"missing={missing}")
+def test_section_D(token):
+    print("\n=== Section D: POST /api/support/chat ===")
+    r = requests.post(f"{API}/support/chat", json={"question": "How do I add a client?"},
+                      headers=auth_headers(token), timeout=15)
+    ok = r.status_code == 200
+    log("D", "13 HTTP 200 (add client)", ok, f"code={r.status_code}")
+    if ok:
+        ans = r.json().get("answer", "")
+        log("D", "13 answer contains 'Clients tab' (case-insensitive)",
+            "clients tab" in ans.lower(), f"ans[:120]={ans[:120]!r}")
 
-    # Field types / enums
-    rr = res.get("risk_reasons")
-    check(isinstance(rr, list) and all(isinstance(x, dict) and "severity" in x and "label" in x for x in rr),
-          "B5 risk_reasons is list of {severity,label}", f"sample={rr[:2] if rr else rr}")
-    check(res.get("parse_confidence") in ("high", "medium", "low"),
-          "B5 parse_confidence ∈ {high,medium,low}", f"val={res.get('parse_confidence')}")
-    check(res.get("parse_source") in ("parsed", "mock"),
-          "B5 parse_source ∈ {parsed,mock}", f"val={res.get('parse_source')}")
-    check(isinstance(res.get("rows_extracted"), int),
-          "B5 rows_extracted int", f"type={type(res.get('rows_extracted'))}")
-    check(isinstance(res.get("bounce_matches_found"), int),
-          "B5 bounce_matches_found int", f"val={res.get('bounce_matches_found')}")
-    check(isinstance(res.get("months_covered_in_file"), int),
-          "B5 months_covered_in_file int", f"val={res.get('months_covered_in_file')}")
-    check(isinstance(res.get("manual_review_recommended"), bool),
-          "B5 manual_review_recommended bool", f"val={res.get('manual_review_recommended')}")
+    r = requests.post(f"{API}/support/chat", json={"question": "How does EMI rollback work?"},
+                      headers=auth_headers(token), timeout=15)
+    ok = r.status_code == 200
+    log("D", "14 HTTP 200 (rollback)", ok, f"code={r.status_code}")
+    if ok:
+        ans = r.json().get("answer", "")
+        al = ans.lower()
+        log("D", "14 mentions 'Undo' or 'rollback'",
+            ("undo" in al) or ("rollback" in al), f"ans[:120]={ans[:120]!r}")
 
-    # B6 — rule consistency on 3+ clients, different file_names
-    probes = []
-    # Fetch lender client list to grab real client ids
-    cl = requests.get(f"{BASE}/clients", headers=hdr(tok), timeout=30)
-    clients = cl.json() if cl.status_code == 200 else []
-    pool = [c["client_id"] for c in clients if c.get("client_id")][:20] or ["cli_seed_000", "cli_seed_001"]
+    r = requests.post(f"{API}/support/chat", json={"question": "How to analyze a bank statement?"},
+                      headers=auth_headers(token), timeout=15)
+    ok = r.status_code == 200
+    log("D", "15 HTTP 200 (analyze statement)", ok, f"code={r.status_code}")
+    if ok:
+        ans = r.json().get("answer", "")
+        al = ans.lower()
+        log("D", "15 mentions 'Upload statement' or '3 / 6 / 12'",
+            ("upload statement" in al) or ("3 / 6 / 12" in ans),
+            f"ans[:160]={ans[:160]!r}")
 
-    rng = random.Random(42)
-    # Use a few file_names to vary seeds until we hit the conditions
-    file_names = [f"probe_{i}.pdf" for i in range(30)]
-    low_cases = 0
-    high_cases = 0
-    print("  …scanning for low & high risk cases across probes")
-    for cc in rng.sample(pool, min(len(pool), 8)):
-        for fn in file_names:
-            res_ = analyze(tok, cc, 6, fn)
-            if res_.get("__error__"):
-                continue
-            bounces = res_.get("bounced_transactions", 0)
-            emi = res_.get("emi_load_pct", 100)
-            br = res_.get("bounce_risk")
-            rr = res_.get("risk_reasons", [])
-            n_med = sum(1 for r in rr if r.get("severity") == "medium")
-            # low rule
-            if bounces == 0 and emi < 30:
-                ok_low = (br == "low")
-                probes.append(("low", cc, fn, bounces, emi, br, ok_low))
-                low_cases += 1
-            # high rule
-            if bounces >= 3 or n_med >= 3:
-                ok_hi = (br == "high")
-                probes.append(("high", cc, fn, bounces, emi, br, ok_hi, n_med))
-                high_cases += 1
-            if low_cases >= 3 and high_cases >= 3:
-                break
-        if low_cases >= 3 and high_cases >= 3:
-            break
+    r = requests.post(f"{API}/support/chat", json={"question": ""},
+                      headers=auth_headers(token), timeout=15)
+    ok = r.status_code == 200
+    log("D", "16 empty question HTTP 200", ok, f"code={r.status_code}")
+    if ok:
+        ans = r.json().get("answer", "")
+        log("D", "16 empty returns a helpful generic reply",
+            len(ans) > 10, f"ans[:120]={ans[:120]!r}")
 
-    low_ok = [p for p in probes if p[0] == "low" and p[6]]
-    high_ok = [p for p in probes if p[0] == "high" and p[6]]
-    low_bad = [p for p in probes if p[0] == "low" and not p[6]]
-    high_bad = [p for p in probes if p[0] == "high" and not p[6]]
-
-    check(len(low_ok) >= 1 and not low_bad,
-          "B6 (bounces==0 AND emi<30) → bounce_risk='low' on random clients",
-          f"low_ok={len(low_ok)} low_bad={len(low_bad)} sample_bad={low_bad[:2]} sample_ok={low_ok[:1]}")
-    check(len(high_ok) >= 1 and not high_bad,
-          "B6 (bounces>=3 OR multi-medium) → bounce_risk='high'",
-          f"high_ok={len(high_ok)} high_bad={len(high_bad)} sample_bad={high_bad[:2]} sample_ok={high_ok[:1]}")
+    r = requests.post(f"{API}/support/chat", json={"question": "anything"}, timeout=15)
+    log("D", "17 no auth -> 401", r.status_code == 401, f"code={r.status_code}")
 
 
-# ---------- C. Bounce-keyword PDF ----------
-def _build_bounce_pdf() -> bytes:
-    from reportlab.pdfgen import canvas
-    from reportlab.lib.pagesizes import A4
-    buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=A4)
-    y = 800
-    lines = [
-        "HDFC Bank — Account Statement",
-        "Account No: XXXXXXXX1234    Period: 01-Apr-2025 to 30-Apr-2025",
-        "",
-        "Date        Narration                                             Amount",
-        "01-04-2025  SALARY CREDIT ACME INC                              Rs. 1,20,000.00",
-        "02-04-2025  UPI/REFERENCE/GROCERY                                Rs. 2,450.00",
-        "05-04-2025  CHQ RETN INSUFFICIENT FUNDS                          Rs. 12,500.00",
-        "05-04-2025  RTN CHG CHEQUE BOUNCED                               Rs. 550.00",
-        "10-04-2025  ECS RETURN INSUFFICIENT FUNDS                        Rs. 8,750.00",
-        "15-04-2025  RENT PAYMENT                                         Rs. 22,000.00",
-        "20-04-2025  UPI/GPAY                                             Rs. 600.00",
-    ]
-    for line in lines:
-        c.drawString(40, y, line)
-        y -= 18
-    c.showPage()
-    c.save()
-    return buf.getvalue()
+def test_section_E(token, client_id):
+    print("\n=== Section E: Regressions ===")
+    r = requests.get(f"{API}/dashboard", headers=auth_headers(token), timeout=20)
+    ok = r.status_code == 200
+    log("E", "18 GET /api/dashboard 200", ok, f"code={r.status_code}")
+    if ok:
+        body = r.json()
+        log("E", "18 portfolio_health present",
+            "portfolio_health" in body,
+            f"keys_top={list(body.keys())[:8]}")
+
+    if client_id:
+        r = requests.get(f"{API}/clients/{client_id}/analysis-report.pdf?months=6",
+                         headers=auth_headers(token), timeout=30)
+        ok = r.status_code == 200
+        log("E", "19 analysis-report.pdf 200", ok, f"code={r.status_code}")
+        if ok:
+            log("E", "19 valid PDF", r.content[:7].startswith(b"%PDF-1."),
+                f"head={r.content[:10]!r}, size={len(r.content)}")
+
+    if client_id:
+        payload = {"months": 6, "file_name": "determinism_probe.pdf"}
+        r1 = requests.post(f"{API}/clients/{client_id}/analyze-statement",
+                           json=payload, headers=auth_headers(token), timeout=30)
+        r2 = requests.post(f"{API}/clients/{client_id}/analyze-statement",
+                           json=payload, headers=auth_headers(token), timeout=30)
+        ok = r1.status_code == 200 and r2.status_code == 200
+        log("E", "20a two analyze-statement calls both 200", ok,
+            f"c1={r1.status_code}, c2={r2.status_code}")
+        if ok:
+            j1, j2 = r1.json(), r2.json()
+            log("E", "20b bounced_transactions identical",
+                j1.get("bounced_transactions") == j2.get("bounced_transactions"),
+                f"{j1.get('bounced_transactions')} vs {j2.get('bounced_transactions')}")
+            log("E", "20c avg_balance identical",
+                j1.get("avg_balance") == j2.get("avg_balance"),
+                f"{j1.get('avg_balance')} vs {j2.get('avg_balance')}")
 
 
-def test_section_C(tok: str) -> None:
-    section("C. BOUNCE-KEYWORD DETECTION (REAL PDF)")
-    cid = "cli_seed_000"
+def main():
+    print(f"Testing against: {API}")
+    token = get_token()
+    print(f"Got token: {token[:20]}...")
+    client_id = test_section_A(token)
+    test_section_B(token)
+    test_section_C(token)
+    test_section_D(token)
+    test_section_E(token, client_id)
 
-    # C7 — parsed path
-    pdf_bytes = _build_bounce_pdf()
-    b64 = base64.b64encode(pdf_bytes).decode()
-    res = analyze(tok, cid, 6, "parsed_real.pdf", file_b64=b64)
-    if res.get("__error__"):
-        check(False, "C7 parsed real PDF", f"{res}")
-    else:
-        print(f"    parse_source={res.get('parse_source')} bounce_matches_found={res.get('bounce_matches_found')} rows={res.get('rows_extracted')} bounced_transactions={res.get('bounced_transactions')}")
-        check(res.get("parse_source") == "parsed",
-              "C7 parse_source == 'parsed'",
-              f"got={res.get('parse_source')}")
-        check(res.get("bounce_matches_found", 0) >= 1,
-              "C7 bounce_matches_found >= 1",
-              f"got={res.get('bounce_matches_found')}")
-        check(res.get("bounced_transactions") == res.get("bounce_matches_found"),
-              "C7 bounced_transactions == bounce_matches_found (override)",
-              f"bt={res.get('bounced_transactions')} bm={res.get('bounce_matches_found')}")
-
-    # C8 — invalid base64 falls back to mock
-    res2 = analyze(tok, cid, 6, "broken.pdf", file_b64="not-a-real-base64$$$###")
-    if res2.get("__error__"):
-        check(False, "C8 invalid base64 falls back gracefully (200)", f"{res2}")
-    else:
-        check(res2.get("parse_source") == "mock",
-              "C8 invalid base64 → parse_source='mock'",
-              f"got={res2.get('parse_source')}")
-
-
-# ---------- D. PDF endpoints ----------
-def test_section_D(tok: str) -> None:
-    section("D. PDF ENDPOINTS")
-    cid = "cli_seed_000"
-
-    # D9 — analysis-report.pdf?months=6 with Bearer
-    r = requests.get(f"{BASE}/clients/{cid}/analysis-report.pdf?months=6", headers=hdr(tok), timeout=60)
-    ct = r.headers.get("content-type", "")
-    cd = r.headers.get("content-disposition", "")
-    magic = r.content[:7] if r.status_code == 200 else b""
-    print(f"    D9 status={r.status_code} size={len(r.content)} ct={ct} magic={magic!r} cd={cd!r}")
-    check(r.status_code == 200, "D9 analysis-report.pdf (Bearer) → 200", f"{r.status_code} {r.text[:120]}")
-    check("application/pdf" in ct, "D9 Content-Type = application/pdf", f"got={ct}")
-    check(r.content.startswith(b"%PDF-1."), "D9 body starts with %PDF-1.", f"magic={magic!r}")
-    check(len(r.content) > 4096, "D9 size > 4KB", f"size={len(r.content)}")
-    check("attachment; filename=LendIQ-Statement-" in cd or "attachment; filename=\"LendIQ-Statement-" in cd,
-          "D9 Content-Disposition contains 'attachment; filename=LendIQ-Statement-'",
-          f"got={cd!r}")
-
-    # D10 — analysis-report.pdf with ?token=<jwt>, no Authorization
-    r2 = requests.get(f"{BASE}/clients/{cid}/analysis-report.pdf?months=6&token={tok}", timeout=60)
-    print(f"    D10 status={r2.status_code} size={len(r2.content)} magic={r2.content[:7]!r}")
-    check(r2.status_code == 200, "D10 analysis-report.pdf (?token=) → 200", f"{r2.status_code}")
-    check(r2.content.startswith(b"%PDF-1."), "D10 valid PDF magic", f"{r2.content[:7]!r}")
-    check(len(r2.content) > 4096, "D10 size > 4KB", f"size={len(r2.content)}")
-
-    # D11 — cibil-report.pdf?token= no Authorization
-    r3 = requests.get(f"{BASE}/clients/{cid}/cibil-report.pdf?token={tok}", timeout=60)
-    cd3 = r3.headers.get("content-disposition", "")
-    print(f"    D11 status={r3.status_code} size={len(r3.content)} magic={r3.content[:7]!r} cd={cd3!r}")
-    check(r3.status_code == 200, "D11 cibil-report.pdf (?token=) → 200", f"{r3.status_code}")
-    check(r3.content.startswith(b"%PDF-1."), "D11 valid PDF magic", f"{r3.content[:7]!r}")
-    check(len(r3.content) > 2048, "D11 size > 2KB", f"size={len(r3.content)}")
-    check("LendIQ-CIBIL-" in cd3, "D11 disposition contains LendIQ-CIBIL-", f"cd={cd3!r}")
-
-    # D12 — No auth → 401
-    r4 = requests.get(f"{BASE}/clients/{cid}/analysis-report.pdf?months=6", timeout=30)
-    r5 = requests.get(f"{BASE}/clients/{cid}/cibil-report.pdf", timeout=30)
-    check(r4.status_code == 401, "D12a analysis-report.pdf no auth → 401", f"{r4.status_code} {r4.text[:100]}")
-    check(r5.status_code == 401, "D12b cibil-report.pdf no auth → 401", f"{r5.status_code} {r5.text[:100]}")
-
-    # Unknown client → 404
-    r6 = requests.get(f"{BASE}/clients/cli_does_not_exist/analysis-report.pdf?months=6", headers=hdr(tok), timeout=30)
-    r7 = requests.get(f"{BASE}/clients/cli_does_not_exist/cibil-report.pdf", headers=hdr(tok), timeout=30)
-    check(r6.status_code == 404, "D12c analysis-report.pdf unknown client → 404", f"{r6.status_code}")
-    check(r7.status_code == 404, "D12d cibil-report.pdf unknown client → 404", f"{r7.status_code}")
-
-
-# ---------- E. Regressions ----------
-def test_section_E(tok: str) -> None:
-    section("E. REGRESSIONS")
-    r = requests.get(f"{BASE}/dashboard", headers=hdr(tok), timeout=30)
-    check(r.status_code == 200, "E13 /api/dashboard → 200", f"{r.status_code}")
-    if r.status_code == 200:
-        ph = r.json().get("portfolio_health", {})
-        print(f"    portfolio_health={ph}")
-        ints = isinstance(ph, dict) and all(isinstance(v, int) for v in ph.values())
-        check(ints and bool(ph), "E13 portfolio_health values all integers", f"ph={ph}")
-
-    r2 = requests.get(f"{BASE}/loans", headers=hdr(tok), timeout=30)
-    check(r2.status_code == 200, "E14 /api/loans → 200", f"{r2.status_code}")
-    if r2.status_code == 200:
-        print(f"    /loans count={len(r2.json())}")
-
-
-# ---------- main ----------
-def main() -> int:
-    print(f"BASE={BASE}")
-    tok = login()
-    print(f"Logged in as lender {MOBILE}, token={tok[:20]}…")
-
-    test_section_A(tok)
-    test_section_B(tok)
-    test_section_C(tok)
-    test_section_D(tok)
-    test_section_E(tok)
-
-    print("\n\n==================== SUMMARY ====================")
-    print(f"PASS: {len(PASS)}")
-    print(f"FAIL: {len(FAIL)}")
-    if FAIL:
-        print("\nFailures:")
-        for f in FAIL:
-            print(f"  - {f}")
-        return 1
-    return 0
+    print("\n" + "=" * 70)
+    fails = [r for r in results if not r[2]]
+    total = len(results)
+    print(f"Total: {total}   Passed: {total - len(fails)}   Failed: {len(fails)}")
+    if fails:
+        print("\nFAILURES:")
+        for s, n, ok, d in fails:
+            print(f"  [{s}] {n}  -- {d}")
+    print("=" * 70)
+    sys.exit(0 if not fails else 1)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

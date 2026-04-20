@@ -72,13 +72,6 @@ export default function Dashboard() {
           <Text style={styles.heroDelta}>Repaid: {stats ? money(stats.total_repaid) : "₹0"} · Returns: {stats ? money(stats.expected_returns) : "₹0"}</Text>
         </View>
 
-        <View style={styles.statRow}>
-          <StatBox testID="stat-repaid" icon="trending-up" color={Colors.success}
-            label="Repaid this month" value={stats ? money(stats.current_month_repaid) : "₹0"} />
-          <StatBox testID="stat-disbursed" icon="arrow-up" color={Colors.primary}
-            label="Funded this month" value={stats ? money(stats.current_month_disbursed) : "₹0"} />
-        </View>
-
         {/* Portfolio Health breakdown */}
         {stats?.portfolio_health && (
           <View style={styles.healthCard}>

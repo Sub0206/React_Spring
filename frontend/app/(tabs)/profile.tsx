@@ -67,32 +67,6 @@ export default function Profile() {
         </View>
 
         <Card style={{ marginTop: Spacing.md }}>
-          <Text style={styles.sectionTitle}>Transaction history</Text>
-          {txns.length === 0 ? (
-            <Text style={styles.emptyText}>No transactions yet.</Text>
-          ) : (
-            txns.slice(0, 20).map((t) => (
-              <View key={t.transaction_id} style={styles.txnRow}>
-                <View style={[styles.txnIcon, { backgroundColor: (t.amount >= 0 ? Colors.success : Colors.danger) + "1A" }]}>
-                  <Ionicons
-                    name={t.amount >= 0 ? "arrow-down" : "arrow-up"}
-                    size={16}
-                    color={t.amount >= 0 ? Colors.success : Colors.danger}
-                  />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.txnTitle}>{t.description}</Text>
-                  <Text style={styles.txnDate}>{new Date(t.created_at).toLocaleDateString()}</Text>
-                </View>
-                <Text style={[styles.txnAmount, { color: t.amount >= 0 ? Colors.success : Colors.danger }]}>
-                  {money(t.amount)}
-                </Text>
-              </View>
-            ))
-          )}
-        </Card>
-
-        <Card style={{ marginTop: Spacing.md }}>
           <Text style={styles.sectionTitle}>{t("settings")}</Text>
 
           <TouchableOpacity
@@ -128,13 +102,25 @@ export default function Profile() {
           </TouchableOpacity>
 
           {[
-            { icon: "notifications", label: "Notification preferences" },
-            { icon: "lock-closed", label: "Privacy & security" },
-            { icon: "help-circle", label: "Help & support" },
+            { icon: "bar-chart", label: "Audit & Reports", route: "/settings/audit", color: Colors.warning },
+            { icon: "chatbubbles", label: "Help & Support", route: "/settings/help", color: Colors.primary },
           ].map((s) => (
-            <TouchableOpacity key={s.label} style={styles.settingRow} activeOpacity={0.7}>
-              <Ionicons name={s.icon as any} size={20} color={Colors.textSecondary} />
-              <Text style={styles.settingText}>{s.label}</Text>
+            <TouchableOpacity
+              key={s.label}
+              testID={`row-${s.label.split(' ')[0].toLowerCase()}`}
+              style={[styles.settingRow, styles.settingRowFeature]}
+              activeOpacity={0.7}
+              onPress={() => router.push(s.route as any)}
+            >
+              <View style={[styles.settingIconWrap, { backgroundColor: s.color + "15" }]}>
+                <Ionicons name={s.icon as any} size={18} color={s.color} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.settingText}>{s.label}</Text>
+                <Text style={styles.settingSub}>
+                  {s.label === "Audit & Reports" ? "Inflow / outflow by month & year" : "Chat with our AI guide"}
+                </Text>
+              </View>
               <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
             </TouchableOpacity>
           ))}

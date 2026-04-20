@@ -9,7 +9,7 @@ import bcrypt
 import jwt as pyjwt
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import List, Optional, Literal, Dict, Any
+from typing import List, Optional, Literal, Dict, Any, Tuple
 
 import httpx
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Header, Request
@@ -1227,6 +1227,33 @@ async def analyze_statement(body: AnalyzeStatementRequest, current: UserPublic =
     except Exception:
         pass
     return result
+
+
+@api.get("/clients/{client_id}/latest-analyses")
+async def latest_analyses(client_id: str, current: UserPublic = Depends(get_current_user)):
+    """Return the most recent stored statement_analysis + cibil_report for a client
+    (scoped to the current lender). Used on the loan-request detail to avoid
+    re-running AI when the loan has already been granted."""
+    client = await db.clients.find_one({"client_id": client_id, "lender_id": current.user_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(404, "Client not found")
+
+    stmt = await db.statement_analyses.find_one(
+        {"client_id": client_id, "lender_id": current.user_id},
+        sort=[("created_at", -1)], projection={"_id": 0},
+    )
+    cibil = await db.cibil_reports.find_one(
+        {"client_id": client_id, "lender_id": current.user_id},
+        sort=[("created_at", -1)], projection={"_id": 0},
+    )
+    return {
+        "statement_analysis": stmt,
+        "cibil_report": cibil,
+        "has_statement": stmt is not None,
+        "has_cibil": cibil is not None,
+    }
+
+
 
 
 @api.post("/clients/{client_id}/analyze-statement")
@@ -2710,6 +2737,204 @@ async def dashboard_overdue(current: UserPublic = Depends(get_current_user)):
                 "principal": l["principal"],
             })
     return {"overdue_loans": out}
+
+
+# ---------- Audit / Help ----------
+@api.get("/audit/summary")
+async def audit_summary(months: int = 6, year: int = 0, current: UserPublic = Depends(get_current_user)):
+    """Inflow (repayments) / outflow (disbursals) audit for the lender."""
+    months = max(1, min(24, int(months)))
+    now = datetime.now(timezone.utc)
+    if year <= 0:
+        year = now.year
+    # Build the month buckets (oldest → newest) ending at the requested year-month.
+    end = datetime(year, (now.month if year == now.year else 12), 1, tzinfo=timezone.utc)
+    buckets: List[dict] = []
+    for offset in range(months - 1, -1, -1):
+        y, m = end.year, end.month - offset
+        while m <= 0:
+            m += 12; y -= 1
+        while m > 12:
+            m -= 12; y += 1
+        label = datetime(y, m, 1).strftime("%b %Y")
+        buckets.append({"year": y, "month": m, "label": label, "inflow": 0.0, "outflow": 0.0, "net": 0.0})
+
+    loans = await db.loans.find({"funded_by": current.user_id}, {"_id": 0, "proof_image_base64": 0}).to_list(1000)
+    funded_count = 0
+    repaid_count = 0
+    overdue_total = 0.0
+    active_loans = 0
+
+    def _bk(y, m):
+        for b in buckets:
+            if b["year"] == y and b["month"] == m:
+                return b
+        return None
+
+    for l in loans:
+        if l.get("status") == "active":
+            active_loans += 1
+        # Outflow on funded_at
+        fa = l.get("funded_at")
+        if fa:
+            if isinstance(fa, str):
+                fa = datetime.fromisoformat(fa)
+            if fa.tzinfo is None:
+                fa = fa.replace(tzinfo=timezone.utc)
+            b = _bk(fa.year, fa.month)
+            if b is not None:
+                b["outflow"] += float(l.get("principal", 0))
+                funded_count += 1
+        # Inflow from repayment schedule
+        for s in l.get("repayment_schedule", []) or []:
+            if s.get("status") == "paid":
+                pd = s.get("paid_date")
+                if pd:
+                    if isinstance(pd, str):
+                        pd = datetime.fromisoformat(pd)
+                    if pd.tzinfo is None:
+                        pd = pd.replace(tzinfo=timezone.utc)
+                    b = _bk(pd.year, pd.month)
+                    if b is not None:
+                        b["inflow"] += float(s.get("amount", 0))
+                        repaid_count += 1
+            else:
+                due = s.get("due_date")
+                if due:
+                    if isinstance(due, str):
+                        due = datetime.fromisoformat(due)
+                    if due.tzinfo is None:
+                        due = due.replace(tzinfo=timezone.utc)
+                    if due < now:
+                        overdue_total += float(s.get("amount", 0))
+
+    for b in buckets:
+        b["inflow"] = round(b["inflow"])
+        b["outflow"] = round(b["outflow"])
+        b["net"] = b["inflow"] - b["outflow"]
+
+    return {
+        "period": {"from": buckets[0]["label"], "to": buckets[-1]["label"], "months": months},
+        "inflow_total": sum(b["inflow"] for b in buckets),
+        "outflow_total": sum(b["outflow"] for b in buckets),
+        "net": sum(b["net"] for b in buckets),
+        "overdue_total": round(overdue_total),
+        "funded_count": funded_count,
+        "repaid_count": repaid_count,
+        "loans_funded": funded_count,
+        "active_loans": active_loans,
+        "monthly": [{"label": b["label"], "inflow": b["inflow"], "outflow": b["outflow"], "net": b["net"]} for b in buckets],
+    }
+
+
+@api.get("/audit/summary.pdf")
+async def audit_summary_pdf(months: int = 6, year: int = 0, current: UserPublic = Depends(get_current_user_flexible)):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors as rlc
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from io import BytesIO
+    from fastapi.responses import StreamingResponse
+
+    data = await audit_summary(months=months, year=year, current=current)
+    primary = rlc.HexColor("#1E40AF")
+    emerald = rlc.HexColor("#10B981")
+    crimson = rlc.HexColor("#DC2626")
+    muted = rlc.HexColor("#64748B")
+    light = rlc.HexColor("#F1F5F9")
+    text = rlc.HexColor("#0F172A")
+
+    buf = BytesIO()
+    pdf = SimpleDocTemplate(buf, pagesize=A4, leftMargin=18*mm, rightMargin=18*mm, topMargin=18*mm, bottomMargin=18*mm, title="LendIQ Audit Report")
+    ss = getSampleStyleSheet()
+    h1 = ParagraphStyle("H1", parent=ss["Heading1"], fontSize=20, textColor=primary, leading=24)
+    h2 = ParagraphStyle("H2", parent=ss["Heading2"], fontSize=13, textColor=primary, leading=16, spaceBefore=6)
+    small = ParagraphStyle("Small", parent=ss["BodyText"], fontSize=9, textColor=muted, leading=11)
+
+    story = []
+    strip = Table([[Paragraph("<b>LendIQ</b>", ParagraphStyle("b", fontSize=16, textColor=rlc.white)), Paragraph("Powered by SKYNOTECH", ParagraphStyle("bs", fontSize=10, textColor=rlc.white, alignment=2))]], colWidths=[90*mm, 80*mm])
+    strip.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1),primary),("TEXTCOLOR",(0,0),(-1,-1),rlc.white),("VALIGN",(0,0),(-1,-1),"MIDDLE"),("TOPPADDING",(0,0),(-1,-1),10),("BOTTOMPADDING",(0,0),(-1,-1),10),("LEFTPADDING",(0,0),(-1,-1),10),("RIGHTPADDING",(0,0),(-1,-1),10)]))
+    story.append(strip); story.append(Spacer(1,10))
+    story.append(Paragraph("Audit & Cashflow Report", h1))
+    story.append(Paragraph(f"Lender: {current.name} · Period: {data['period']['from']} — {data['period']['to']} · Generated {datetime.now(timezone.utc).strftime('%d %b %Y %H:%M UTC')}", small))
+    story.append(Spacer(1,12))
+
+    summary_rows = [
+        ["Inflow (repayments)",  f"₹{int(data['inflow_total']):,}"],
+        ["Outflow (disbursals)", f"₹{int(data['outflow_total']):,}"],
+        ["Net position",         f"₹{int(data['net']):,}"],
+        ["Overdue outstanding",  f"₹{int(data['overdue_total']):,}"],
+        ["Loans funded",         str(data['funded_count'])],
+        ["EMI repayments",       str(data['repaid_count'])],
+        ["Active loans",         str(data['active_loans'])],
+    ]
+    st = Table(summary_rows, colWidths=[80*mm, 80*mm])
+    st.setStyle(TableStyle([("BACKGROUND",(0,0),(0,-1),light),("FONTNAME",(0,0),(0,-1),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),10),("ALIGN",(1,0),(1,-1),"RIGHT"),("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6),("LEFTPADDING",(0,0),(-1,-1),10),("RIGHTPADDING",(0,0),(-1,-1),10),("LINEBELOW",(0,0),(-1,-1),0.3,rlc.HexColor("#E2E8F0"))]))
+    story.append(st); story.append(Spacer(1,14))
+
+    story.append(Paragraph("Month-wise cashflow", h2))
+    rows = [["Month","Inflow","Outflow","Net"]]
+    for m in data["monthly"]:
+        rows.append([m["label"], f"₹{m['inflow']:,}", f"₹{m['outflow']:,}", f"₹{m['net']:,}"])
+    mt = Table(rows, colWidths=[50*mm, 40*mm, 40*mm, 40*mm])
+    mt.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),primary),("TEXTCOLOR",(0,0),(-1,0),rlc.white),("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),9.5),("ALIGN",(1,0),(-1,-1),"RIGHT"),("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5),("LEFTPADDING",(0,0),(-1,-1),8),("RIGHTPADDING",(0,0),(-1,-1),8),("LINEBELOW",(0,0),(-1,-1),0.3,rlc.HexColor("#E2E8F0"))]))
+    story.append(mt)
+
+    def _footer(c, d):
+        c.saveState(); c.setFont("Helvetica", 8); c.setFillColor(muted)
+        c.drawString(18*mm, 10*mm, f"LendIQ Audit · {current.name} · {datetime.now(timezone.utc).strftime('%Y-%m-%d')}")
+        c.drawRightString(A4[0]-18*mm, 10*mm, f"Page {c.getPageNumber()}")
+        c.restoreState()
+    pdf.build(story, onFirstPage=_footer, onLaterPages=_footer)
+    buf.seek(0)
+    fn = f"LendIQ-Audit-{data['period']['from'].replace(' ','')}-to-{data['period']['to'].replace(' ','')}.pdf"
+    return StreamingResponse(buf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{fn}"'})
+
+
+class ChatRequest(BaseModel):
+    question: str
+
+
+@api.post("/support/chat")
+async def support_chat(body: ChatRequest, current: UserPublic = Depends(get_current_user)):
+    """Deterministic, fast guide bot. Uses a simple keyword-map to produce step-by-step
+    answers on the most common how-tos; falls back to a generic tip."""
+    q = (body.question or "").strip().lower()
+    if not q:
+        return {"answer": "Please ask a question — e.g. 'How do I add a client?'"}
+
+    kb: List[Tuple[List[str], str]] = [
+        (["add", "client"], "To add a new client:\n1. Go to the **Clients** tab at the bottom.\n2. Tap the **+ Add** button on the top right.\n3. Fill in name, mobile number, Aadhaar (12 digits) and PAN (10 chars).\n4. Add the permanent address block.\n5. Tap **Save client** — we auto-verify Aadhaar & PAN and add them to your clients list."),
+        (["new", "loan"], "To issue a new loan:\n1. Open the client from **Clients**.\n2. Tap **New loan**.\n3. Review the client snapshot → Continue.\n4. Upload a bank statement (PDF) → we analyze + score it.\n5. Pull a CIBIL check (optional) → enter amount, tenure, rate, due date.\n6. Review summary → tap **Fund** to disburse."),
+        (["emi", "mark paid", "pay"], "Month-wise EMI rules:\n• You can **Mark Paid** / **Reschedule** only for the CURRENT month.\n• Past + future months are locked to protect the record.\n• If you made a mistake, use the **Undo** button on the same row to rollback the payment and reopen it."),
+        (["bank", "statement", "analyze", "analysis"], "Bank-statement analysis:\n1. Open **New loan → Upload statement**.\n2. Pick 3 / 6 / 12 months.\n3. Select the PDF — we parse it, detect bounces/NACH fails, and score the risk.\n4. Download a branded PDF report from the analysis screen."),
+        (["cibil"], "CIBIL check:\n1. During the new loan flow, after statement analysis tap **Pull CIBIL**.\n2. We fetch the score + key factors.\n3. Tap **Download Report (PDF)** to save the full CIBIL report."),
+        (["language", "भाषा", "மொழி"], "Change language:\n1. Profile tab → **Language**.\n2. Pick from English, Hindi, Tamil, Telugu, Kannada, Malayalam.\n3. The entire app switches instantly."),
+        (["subscription", "plan", "upgrade"], "Subscription / upgrade:\n1. Profile tab → **Subscription**.\n2. Toggle Monthly / Yearly.\n3. Pick Starter / Smart Credit / Prime Elite.\n4. Tap **Upgrade** — payment gateway coming soon."),
+        (["audit", "report", "inflow", "outflow"], "Audit & reports:\n1. Profile tab → **Audit & Reports**.\n2. Pick 3M / 6M / 12M / YTD and the year.\n3. See month-wise inflow / outflow / net.\n4. Tap **Download audit report (PDF)** for a branded report."),
+        (["overdue", "late"], "Overdue loans:\n• Dashboard → **Portfolio health → Overdue** opens the filtered list.\n• Red highlighted loans have unpaid EMIs past due.\n• Open any loan → tap **Mark paid (current month)** to collect."),
+        (["logout", "sign out"], "Sign out from Profile tab → **Logout** at the bottom."),
+        (["pdf", "download"], "All PDFs (Document Analysis, CIBIL, Audit) download from their respective screens. On mobile we open the system share sheet so you can save to Files or forward."),
+    ]
+    for keys, answer in kb:
+        if all(k in q for k in keys[:1]):
+            matched = sum(1 for k in keys if k in q)
+            if matched >= 1:
+                return {"answer": answer}
+
+    # Fallback: friendly generic tip + top-3 suggestions
+    return {"answer": (
+        "I don't have a specific step list for that yet, but here's where to look:\n"
+        "• **Clients tab** → add / view clients\n"
+        "• **Loans tab** → active loans + filters (On Track / Overdue / At Risk / Completed)\n"
+        "• **Profile → Audit** → inflow/outflow reports\n"
+        "• **Profile → Language** → switch language\n"
+        "Ask me things like 'How to add a client', 'How to analyze a statement', or 'How does EMI rollback work?'"
+    )}
+
+
+
 
 # ---------- Seed data ----------
 async def seed_demo_data():

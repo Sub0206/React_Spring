@@ -35,11 +35,18 @@ export default function ApplicationDetail() {
   const [app, setApp] = useState<App | null>(null);
   const [loading, setLoading] = useState(true);
   const [actioning, setActioning] = useState<"" | "approve" | "reject" | "fund" | "rescore">("");
+  const [cached, setCached] = useState<{ statement_analysis: any; cibil_report: any } | null>(null);
 
   const load = useCallback(async () => {
     try {
       const d = await api<App>(`/applications/${id}`);
       setApp(d);
+      if (d.client_id) {
+        try {
+          const c = await api<any>(`/clients/${d.client_id}/latest-analyses`);
+          setCached({ statement_analysis: c.statement_analysis, cibil_report: c.cibil_report });
+        } catch (_) { /* no cached analyses */ }
+      }
     } catch (e: any) {
       Alert.alert("Error", e.message);
     } finally {
@@ -206,6 +213,46 @@ export default function ApplicationDetail() {
           )}
         </View>
 
+        {/* Cached Statement & CIBIL summaries — READ-ONLY for existing loans */}
+        {cached?.statement_analysis && (
+          <View style={styles.cachedCard}>
+            <View style={styles.cachedHead}>
+              <Ionicons name="document-text" size={16} color={Colors.primary} />
+              <Text style={styles.cachedTitle}>Bank Statement Analysis</Text>
+              <Text style={styles.cachedTs}>{new Date(cached.statement_analysis.created_at || Date.now()).toLocaleDateString()}</Text>
+            </View>
+            <View style={styles.cachedGrid}>
+              <KVItem k="Risk" v={String(cached.statement_analysis.bounce_risk || "—").toUpperCase()} color={cached.statement_analysis.risk_color === "green" ? Colors.success : cached.statement_analysis.risk_color === "red" ? Colors.danger : Colors.warning} />
+              <KVItem k="Eligibility" v={String(cached.statement_analysis.loan_eligibility || "—").toUpperCase()} />
+              <KVItem k="Bounces" v={String(cached.statement_analysis.bounced_transactions ?? 0)} />
+              <KVItem k="Avg balance" v={`₹${(cached.statement_analysis.avg_balance || 0).toLocaleString("en-IN")}`} />
+              <KVItem k="EMI load" v={`${cached.statement_analysis.emi_load_pct || 0}%`} />
+              <KVItem k="Months" v={String(cached.statement_analysis.months_analyzed ?? "—")} />
+            </View>
+            <Text style={styles.cachedSummary} numberOfLines={3}>{cached.statement_analysis.summary}</Text>
+          </View>
+        )}
+
+        {cached?.cibil_report && (
+          <View style={styles.cachedCard}>
+            <View style={styles.cachedHead}>
+              <Ionicons name="shield-checkmark" size={16} color={Colors.success} />
+              <Text style={styles.cachedTitle}>CIBIL Report</Text>
+              <Text style={styles.cachedTs}>{new Date(cached.cibil_report.created_at || Date.now()).toLocaleDateString()}</Text>
+            </View>
+            <View style={styles.cachedGrid}>
+              <KVItem k="Score" v={String(cached.cibil_report.score || "—")} color={Colors.primary} />
+              <KVItem k="Band" v={String(cached.cibil_report.band || "—").toUpperCase()} />
+              <KVItem k="On-time" v={`${cached.cibil_report.on_time_payments_pct || 0}%`} />
+              <KVItem k="Utilization" v={`${cached.cibil_report.credit_utilization_pct || 0}%`} />
+              <KVItem k="Accounts" v={String(cached.cibil_report.total_accounts ?? 0)} />
+              <KVItem k="Enquiries (6m)" v={String(cached.cibil_report.hard_enquiries_6m ?? 0)} />
+            </View>
+            <Text style={styles.cachedSummary} numberOfLines={3}>{cached.cibil_report.summary}</Text>
+          </View>
+        )}
+
+
         {/* Borrower profile */}
         <Card style={{ marginTop: Spacing.md }}>
           <Text style={styles.sectionTitle}>Borrower profile</Text>
@@ -276,6 +323,15 @@ function SumItem({ label, value, highlight }: { label: string; value: string; hi
   );
 }
 
+function KVItem({ k, v, color }: { k: string; v: string; color?: string }) {
+  return (
+    <View style={styles.kv}>
+      <Text style={styles.kvKey}>{k}</Text>
+      <Text style={[styles.kvVal, color ? { color } : {}]}>{v}</Text>
+    </View>
+  );
+}
+
 const rowStyles = StyleSheet.create({
   row: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 12 },
   divider: { borderBottomWidth: 1, borderBottomColor: Colors.borderLight },
@@ -325,6 +381,19 @@ const styles = StyleSheet.create({
   },
   aiRecoLabel: { flex: 1, color: Colors.textSecondary, fontSize: 12, fontWeight: "700", letterSpacing: 0.3 },
   aiRecoValue: { fontSize: 13, fontWeight: "800" },
+
+  cachedCard: {
+    backgroundColor: Colors.surface, borderRadius: Radii.xl, padding: Spacing.lg,
+    marginBottom: Spacing.md, borderWidth: 1, borderColor: Colors.borderLight, ...Shadows.card,
+  },
+  cachedHead: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
+  cachedTitle: { flex: 1, fontSize: 14, fontWeight: "800", color: Colors.textPrimary, letterSpacing: 0.3 },
+  cachedTs: { fontSize: 11, color: Colors.textMuted, fontWeight: "600" },
+  cachedGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 10 },
+  kv: { width: "48%", backgroundColor: Colors.bgAlt, padding: 10, borderRadius: Radii.md },
+  kvKey: { fontSize: 11, color: Colors.textMuted, fontWeight: "700", letterSpacing: 0.4 },
+  kvVal: { fontSize: 14, fontWeight: "800", color: Colors.textPrimary, marginTop: 3 },
+  cachedSummary: { fontSize: 12, color: Colors.textSecondary, lineHeight: 17 },
   name: { fontSize: 22, fontWeight: "800", color: Colors.textPrimary },
   meta: { color: Colors.textSecondary, fontSize: 14, marginTop: 2 },
   label: { fontSize: 11, color: Colors.textMuted, fontWeight: "700", letterSpacing: 0.5 },
