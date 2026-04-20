@@ -59,9 +59,14 @@ export default function Subscribe() {
       await api("/subscriptions/subscribe", { method: "POST", body: { plan: picked.id, method } });
       await refresh();
       setShowPay(false);
-      Alert.alert("Payment successful 🎉", `${picked.name} activated for 30 days.`, [
-        { text: "Continue", onPress: () => router.replace("/(tabs)/dashboard") },
-      ]);
+      if (typeof window !== "undefined") {
+        // Web: Alert buttons are non-blocking; redirect immediately
+        router.replace("/(tabs)/dashboard");
+      } else {
+        Alert.alert("Payment successful 🎉", `${picked.name} activated for 30 days.`, [
+          { text: "Continue", onPress: () => router.replace("/(tabs)/dashboard") },
+        ]);
+      }
     } catch (e: any) {
       Alert.alert("Payment failed", e.message);
     } finally { setLoading(false); }
