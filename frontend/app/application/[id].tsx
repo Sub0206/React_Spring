@@ -1,11 +1,19 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator } from "react-native";
+import React, { useCallback, useEffect, useState } from "react";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Modal } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "../../src/api";
-import { Badge, Card, PrimaryButton } from "../../src/ui";
+import { Card, InitialsAvatar, Input, PrimaryButton } from "../../src/ui";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
+
+type Client = {
+  client_id: string;
+  name: string;
+  mobile?: string;
+  pan?: string;
+  aadhaar?: string;
+};
 
 type App = {
   application_id: string;
@@ -21,24 +29,32 @@ type App = {
   decided_at?: string; decided_by?: string; decided_by_name?: string; decision_reason?: string;
   approved_amount?: number; approved_tenure?: number; approved_rate?: number;
   risk_factors_at_decision?: string[];
-  ai_score?: number; ai_risk?: string; ai_recommendation?: string; ai_reasoning?: string;
-  ai_factors?: { label: string; impact: string; detail: string }[];
+  ai_score?: number; ai_risk?: string; ai_recommendation?: string;
 };
 
-function riskInfo(risk?: string) {
-  if (risk === "low") return { color: Colors.success, bg: Colors.success + "1A", label: "LOW RISK" };
-  if (risk === "medium") return { color: Colors.secondary, bg: Colors.secondary + "1A", label: "MEDIUM RISK" };
-  if (risk === "high") return { color: Colors.danger, bg: Colors.danger + "1A", label: "HIGH RISK" };
-  return { color: Colors.textMuted, bg: Colors.bgAlt, label: "UNSCORED" };
+const riskHex = (c?: string) =>
+  c === "green" ? Colors.success : c === "yellow" ? Colors.secondary : c === "red" ? Colors.danger : Colors.textMuted;
+
+const bandHex = (c?: string) =>
+  c === "blue" ? "#2196F3" : c === "green" ? Colors.success : c === "yellow" ? Colors.secondary : c === "red" ? Colors.danger : Colors.textMuted;
+
+function maskPan(pan?: string) {
+  if (!pan || pan.length < 10) return pan || "—";
+  return pan.slice(0, 3) + "XXXX" + pan.slice(-2);
 }
 
-export default function ApplicationDetail() {
+export default function ApplicationSummary() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [app, setApp] = useState<App | null>(null);
+  const [client, setClient] = useState<Client | null>(null);
   const [loading, setLoading] = useState(true);
-  const [actioning, setActioning] = useState<"" | "approve" | "reject" | "fund" | "rescore">("");
+  const [actioning, setActioning] = useState<"" | "approve" | "reject" | "fund">("");
   const [cached, setCached] = useState<{ statement_analysis: any; cibil_report: any } | null>(null);
+
+  // Reject modal state
+  const [rejectOpen, setRejectOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -46,8 +62,12 @@ export default function ApplicationDetail() {
       setApp(d);
       if (d.client_id) {
         try {
-          const c = await api<any>(`/clients/${d.client_id}/latest-analyses`);
-          setCached({ statement_analysis: c.statement_analysis, cibil_report: c.cibil_report });
+          const c = await api<Client>(`/clients/${d.client_id}`);
+          setClient(c);
+        } catch (_) { /* client fetch optional */ }
+        try {
+          const la = await api<any>(`/clients/${d.client_id}/latest-analyses`);
+          setCached({ statement_analysis: la.statement_analysis, cibil_report: la.cibil_report });
         } catch (_) { /* no cached analyses */ }
       }
     } catch (e: any) {
@@ -59,12 +79,12 @@ export default function ApplicationDetail() {
 
   useEffect(() => { load(); }, [load]);
 
-  const runAction = async (endpoint: "approve" | "reject" | "fund", key: "approve" | "reject" | "fund") => {
+  const runAction = async (endpoint: "approve" | "reject" | "fund", key: "approve" | "reject" | "fund", extraBody?: any) => {
     setActioning(key);
     try {
-      await api(`/applications/${id}/${endpoint}`, { method: "POST" });
-      Alert.alert("Success", `Loan ${endpoint}d`);
+      await api(`/applications/${id}/${endpoint}`, { method: "POST", body: extraBody });
       if (endpoint === "fund") {
+        Alert.alert("Loan funded", "The loan has been disbursed.");
         router.replace("/(tabs)/loans");
       } else {
         await load();
@@ -76,29 +96,31 @@ export default function ApplicationDetail() {
     }
   };
 
-  const rescore = async () => {
-    setActioning("rescore");
-    try {
-      const d = await api<App>(`/applications/${id}/score`, { method: "POST" });
-      setApp(d);
-    } catch (e: any) {
-      Alert.alert("Error", e.message);
-    } finally {
-      setActioning("");
+  const confirmReject = async () => {
+    if (!rejectReason.trim()) {
+      Alert.alert("Reason required", "Please add a short reason for rejection.");
+      return;
     }
+    setRejectOpen(false);
+    await runAction("reject", "reject", { reason: rejectReason.trim() });
+    setRejectReason("");
   };
 
   if (loading || !app) {
     return (
       <SafeAreaView style={styles.safe}>
+        <View style={styles.topBar}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} testID="back-btn">
+            <Ionicons name="chevron-back" size={24} color={Colors.textPrimary} />
+          </TouchableOpacity>
+          <Text style={styles.topTitle}>Application Summary</Text>
+          <View style={{ width: 44 }} />
+        </View>
         <ActivityIndicator size="large" color={Colors.primary} style={{ marginTop: 80 }} />
       </SafeAreaView>
     );
   }
 
-  const r = riskInfo(app.ai_risk);
-  const b = app.borrower;
-  const dti = ((b.existing_debts / Math.max(b.monthly_income, 1)) * 100).toFixed(0);
   // Loan maths
   const P = Number(app.amount) || 0;
   const n = Math.max(1, Number(app.term_months) || 1);
@@ -106,42 +128,41 @@ export default function ApplicationDetail() {
   const emi = rMonthly > 0
     ? Math.round((P * rMonthly * Math.pow(1 + rMonthly, n)) / (Math.pow(1 + rMonthly, n) - 1))
     : Math.round(P / n);
-  const processingFee = Math.round(P * 0.015); // 1.5% standard processing fee
+  const processingFee = Math.round(P * 0.015);
   const netDisbursal = Math.max(0, P - processingFee);
-  // Requested date — prefer created_at then requested_at, else today
-  const reqDate = app.created_at || app.requested_at || new Date().toISOString();
-  const reqDateStr = new Date(reqDate).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
-  // Monthly due date — 5th of every month by convention (matches app default)
   const dueDateStr = "5th of every month";
-  const shortId = (app.application_id || "").replace(/^app_?/, "").slice(0, 10).toUpperCase();
-  const recoBy = app.ai_recommendation || (app.ai_risk === "low" ? "Approve" : app.ai_risk === "high" ? "Manual Review" : "Approve with Caution");
+
+  const analysis = cached?.statement_analysis;
+  const cibil = cached?.cibil_report;
+
+  // Combined overall risk (same formula as New Loan summary)
+  let overallScore = 50;
+  if (analysis) overallScore += analysis.risk_color === "green" ? 20 : analysis.risk_color === "yellow" ? 0 : -20;
+  if (cibil) overallScore += (cibil.score - 650) / 10;
+  overallScore = Math.max(0, Math.min(100, Math.round(overallScore)));
+  const overallLabel = overallScore >= 70 ? "LOW RISK" : overallScore >= 45 ? "MODERATE" : "HIGH RISK";
+  const overallColor = overallScore >= 70 ? Colors.success : overallScore >= 45 ? Colors.secondary : Colors.danger;
+
+  const isDecided = app.status === "approved" || app.status === "rejected" || app.status === "funded";
+  const showActions = app.status === "pending";
+  const showFund = app.status === "approved";
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
       <View style={styles.topBar}>
-        <TouchableOpacity testID="back-btn" onPress={() => router.back()} style={styles.backBtn}>
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} testID="back-btn">
           <Ionicons name="chevron-back" size={24} color={Colors.textPrimary} />
         </TouchableOpacity>
-        <Text style={styles.topTitle}>Loan Request</Text>
+        <Text style={styles.topTitle}>Application Summary</Text>
         <View style={{ width: 44 }} />
       </View>
 
       <ScrollView contentContainerStyle={{ padding: Spacing.lg, paddingBottom: 160 }}>
-        {/* Clean text-only client header */}
-        <View style={styles.clientHeader}>
-          <Text style={styles.clientName}>{b.name}</Text>
-          <View style={styles.clientMetaRow}>
-            <Text style={styles.clientMeta}>ID #{shortId}</Text>
-            <View style={styles.dotSep} />
-            <Text style={styles.clientMeta}>Requested {reqDateStr}</Text>
-          </View>
-          <View style={{ flexDirection: "row", gap: 6, marginTop: 8 }}>
-            <Badge label={app.status.toUpperCase()} color={app.status === "pending" ? Colors.secondary : app.status === "funded" ? Colors.success : Colors.primary} />
-          </View>
-        </View>
+        <Text style={styles.h1}>Application summary</Text>
+        <Text style={styles.h1Sub}>Review risk & confirm to {showFund ? "disburse the loan." : "create the loan."}</Text>
 
-        {/* ==== Decision Audit Stamp (read-only, shown once a decision has been made) ==== */}
-        {(app.status === "approved" || app.status === "rejected" || app.status === "funded") && app.decided_at && (
+        {/* Decision audit stamp (read-only) */}
+        {isDecided && app.decided_at && (
           <View style={[styles.stampCard, { borderColor: app.status === "rejected" ? Colors.danger : Colors.success }]}>
             <View style={styles.stampHead}>
               <Ionicons
@@ -152,48 +173,102 @@ export default function ApplicationDetail() {
               <Text style={[styles.stampTitle, { color: app.status === "rejected" ? Colors.danger : Colors.success }]}>
                 {app.status === "rejected" ? "Loan Rejected" : (app.status === "funded" ? "Loan Funded" : "Loan Approved")}
               </Text>
-              <Text style={styles.stampTs}>{new Date(app.decided_at).toLocaleString()}</Text>
+              <Text style={styles.stampTs}>{new Date(app.decided_at).toLocaleDateString()}</Text>
             </View>
             <View style={styles.stampGrid}>
               <KVItem k="Decision by" v={app.decided_by_name || "Lender"} />
-              <KVItem k="Decision date" v={new Date(app.decided_at).toLocaleDateString()} />
-              {app.status !== "rejected" ? (
-                <>
-                  <KVItem k="Approved amount" v={`₹${(app.approved_amount ?? app.amount).toLocaleString("en-IN")}`} color={Colors.success} />
-                  <KVItem k="Tenure" v={`${app.approved_tenure ?? app.term_months} months`} />
-                  <KVItem k="Interest rate" v={`${app.approved_rate ?? app.interest_rate}% p.a.`} />
-                </>
-              ) : null}
+              <KVItem k="Status" v={app.status.toUpperCase()} color={app.status === "rejected" ? Colors.danger : Colors.success} />
             </View>
-            {app.decision_reason && (
+            {app.decision_reason ? (
               <View style={styles.stampReason}>
                 <Text style={styles.stampReasonLbl}>{app.status === "rejected" ? "Rejection reason" : "Approval reason"}</Text>
                 <Text style={styles.stampReasonTxt}>{app.decision_reason}</Text>
               </View>
-            )}
-            {app.status === "rejected" && app.risk_factors_at_decision && app.risk_factors_at_decision.length > 0 && (
-              <View style={styles.stampReason}>
-                <Text style={styles.stampReasonLbl}>Key risk factors at decision</Text>
-                {app.risk_factors_at_decision.map((r, i) => (
-                  <Text key={i} style={styles.stampRisk}>• {r}</Text>
-                ))}
-              </View>
-            )}
+            ) : null}
           </View>
         )}
 
-        {/* Premium loan summary */}
-        <View style={styles.summaryCard}>
-          <View style={styles.summaryHeaderRow}>
-            <Text style={styles.summaryHeaderTitle}>LOAN SUMMARY</Text>
-            <View style={[styles.riskChip, { backgroundColor: r.bg, borderColor: r.color + "55" }]}>
-              <View style={[styles.riskDot, { backgroundColor: r.color }]} />
-              <Text style={[styles.riskChipText, { color: r.color }]}>{r.label}</Text>
+        {/* Client header card */}
+        <Card style={{ marginTop: Spacing.md }}>
+          <View style={styles.clientRow}>
+            <InitialsAvatar name={(client?.name || app.borrower.name)} size={48} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.clientName}>{client?.name || app.borrower.name}</Text>
+              <Text style={styles.clientSub}>
+                {client?.mobile ? `+91 ${client.mobile}` : "—"}
+                {" · "}
+                {maskPan(client?.pan)}
+              </Text>
             </View>
           </View>
-          <Text testID="loan-amount" style={styles.summaryAmount}>₹{P.toLocaleString("en-IN")}</Text>
-          <Text style={styles.summaryPurpose}>{app.purpose} · {n} months · {app.interest_rate}% p.a.</Text>
+        </Card>
 
+        {/* Bank Statement risk card */}
+        {analysis ? (
+          <View style={[styles.riskCard, { backgroundColor: riskHex(analysis.risk_color) + "12", borderColor: riskHex(analysis.risk_color) }]}>
+            <View style={[styles.riskDot, { backgroundColor: riskHex(analysis.risk_color) }]} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.riskLabel}>BANK STATEMENT</Text>
+              <Text style={[styles.riskValue, { color: riskHex(analysis.risk_color) }]}>{String(analysis.bounce_risk || "—").toUpperCase()} RISK</Text>
+              <Text style={styles.riskSub}>
+                {(analysis.bounced_transactions ?? 0)} bounces · Avg ₹{(analysis.avg_balance ?? 0).toLocaleString("en-IN")}
+              </Text>
+            </View>
+          </View>
+        ) : (
+          <View style={styles.placeholderCard}>
+            <Ionicons name="document-text-outline" size={18} color={Colors.textMuted} />
+            <Text style={styles.placeholderTxt}>No bank statement uploaded yet.</Text>
+          </View>
+        )}
+
+        {/* CIBIL score card */}
+        {cibil ? (
+          <TouchableOpacity
+            testID="open-cibil-report"
+            activeOpacity={0.9}
+            onPress={() => app.client_id && router.push(`/cibil-report/${app.client_id}` as any)}
+            style={[styles.riskCard, { backgroundColor: bandHex(cibil.band_color) + "12", borderColor: bandHex(cibil.band_color) }]}
+          >
+            <View style={[styles.riskDot, { backgroundColor: bandHex(cibil.band_color) }]} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.riskLabel}>CIBIL SCORE · TAP TO VIEW REPORT</Text>
+              <Text style={[styles.riskValue, { color: bandHex(cibil.band_color) }]}>{cibil.score} · {String(cibil.band || "—").toUpperCase()}</Text>
+              <Text style={styles.riskSub}>On-time {cibil.on_time_payments_pct || 0}% · Utilization {cibil.credit_utilization_pct || 0}%</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={bandHex(cibil.band_color)} />
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.placeholderCard}>
+            <Ionicons name="shield-outline" size={18} color={Colors.textMuted} />
+            <Text style={styles.placeholderTxt}>CIBIL not yet pulled.</Text>
+          </View>
+        )}
+
+        {/* Overall Client Risk */}
+        <Card style={{ marginTop: Spacing.md }}>
+          <Text style={styles.sectionTitle}>Overall client risk</Text>
+          <View style={{ flexDirection: "row", alignItems: "baseline", gap: 10 }}>
+            <Text style={{ fontSize: 40, fontWeight: "800", color: overallColor, letterSpacing: -1 }}>{overallScore}</Text>
+            <Text style={{ color: Colors.textMuted, fontSize: 13 }}>/ 100</Text>
+            <View style={{ flex: 1 }} />
+            <View style={{ paddingHorizontal: 12, paddingVertical: 5, borderRadius: Radii.pill, backgroundColor: overallColor + "1A" }}>
+              <Text style={{ color: overallColor, fontWeight: "800", fontSize: 12 }}>{overallLabel}</Text>
+            </View>
+          </View>
+          <View style={{ height: 10, backgroundColor: Colors.bgAlt, borderRadius: 8, marginTop: 10, overflow: "hidden" }}>
+            <View style={{ width: `${overallScore}%`, height: "100%", backgroundColor: overallColor }} />
+          </View>
+          <Text style={{ color: Colors.textSecondary, fontSize: 13, marginTop: 10, lineHeight: 20 }}>
+            Combined assessment of bank-statement bounce risk and CIBIL credit discipline. Green = confident lend, Amber = review, Red = caution.
+          </Text>
+        </Card>
+
+        {/* Loan summary numbers */}
+        <Card style={{ marginTop: Spacing.md }}>
+          <Text style={styles.sectionTitle}>Loan summary</Text>
+          <Text style={styles.summaryAmount}>₹{P.toLocaleString("en-IN")}</Text>
+          <Text style={styles.summaryPurpose}>{app.purpose} · {n} months · {app.interest_rate}% p.a.</Text>
           <View style={styles.summaryGrid}>
             <SumItem label="Monthly EMI" value={`₹${emi.toLocaleString("en-IN")}`} highlight />
             <SumItem label="Tenure" value={`${n} months`} />
@@ -202,127 +277,22 @@ export default function ApplicationDetail() {
             <SumItem label="Processing fee" value={`₹${processingFee.toLocaleString("en-IN")}`} />
             <SumItem label="Net disbursal" value={`₹${netDisbursal.toLocaleString("en-IN")}`} />
           </View>
-
-          <View style={styles.aiRecoRow}>
-            <Ionicons name="sparkles" size={16} color={Colors.primary} />
-            <Text style={styles.aiRecoLabel}>Recommended by AI</Text>
-            <Text style={[styles.aiRecoValue, { color: r.color }]}>
-              {String(recoBy).toUpperCase().replace(/_/g, " ")}
-            </Text>
-          </View>
-        </View>
-
-        {/* AI Credit Score */}
-        <View style={styles.aiCard}>
-          <View style={styles.aiHeader}>
-            <View style={styles.aiIcon}>
-              <Ionicons name="sparkles" size={18} color="#fff" />
-            </View>
-            <Text style={styles.aiTitle}>AI Credit Assessment</Text>
-            <TouchableOpacity testID="rescore-btn" onPress={rescore} disabled={actioning !== ""} style={styles.rescoreBtn}>
-              {actioning === "rescore" ? <ActivityIndicator color={Colors.primary} size="small" /> : <Ionicons name="refresh" size={16} color={Colors.primary} />}
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.scoreRow}>
-            <View style={styles.scoreCircle}>
-              <Text testID="ai-score" style={styles.scoreNumber}>{app.ai_score ?? "—"}</Text>
-              <Text style={styles.scoreMax}>/ 850</Text>
-            </View>
-            <View style={{ flex: 1, marginLeft: Spacing.md }}>
-              <View style={[styles.riskPill, { backgroundColor: r.bg, borderColor: r.color + "33" }]}>
-                <Text style={[styles.riskText, { color: r.color }]}>{r.label}</Text>
-              </View>
-              <Text style={styles.reasoning}>{app.ai_reasoning || "Tap refresh to generate AI assessment."}</Text>
-            </View>
-          </View>
-
-          {app.ai_factors && app.ai_factors.length > 0 && (
-            <View style={{ marginTop: Spacing.md }}>
-              {app.ai_factors.map((f, i) => {
-                const c = f.impact === "positive" ? Colors.success : f.impact === "negative" ? Colors.danger : Colors.textMuted;
-                const icon = f.impact === "positive" ? "trending-up" : f.impact === "negative" ? "trending-down" : "remove";
-                return (
-                  <View key={i} style={styles.factorRow}>
-                    <View style={[styles.factorIcon, { backgroundColor: c + "1A" }]}>
-                      <Ionicons name={icon as any} size={14} color={c} />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.factorLabel}>{f.label}</Text>
-                      <Text style={styles.factorDetail}>{f.detail}</Text>
-                    </View>
-                  </View>
-                );
-              })}
-            </View>
-          )}
-        </View>
-
-        {/* Cached Statement & CIBIL summaries — READ-ONLY for existing loans */}
-        {cached?.statement_analysis && (
-          <View style={styles.cachedCard}>
-            <View style={styles.cachedHead}>
-              <Ionicons name="document-text" size={16} color={Colors.primary} />
-              <Text style={styles.cachedTitle}>Bank Statement Analysis</Text>
-              <Text style={styles.cachedTs}>{new Date(cached.statement_analysis.created_at || Date.now()).toLocaleDateString()}</Text>
-            </View>
-            <View style={styles.cachedGrid}>
-              <KVItem k="Risk" v={String(cached.statement_analysis.bounce_risk || "—").toUpperCase()} color={cached.statement_analysis.risk_color === "green" ? Colors.success : cached.statement_analysis.risk_color === "red" ? Colors.danger : Colors.warning} />
-              <KVItem k="Eligibility" v={String(cached.statement_analysis.loan_eligibility || "—").toUpperCase()} />
-              <KVItem k="Bounces" v={String(cached.statement_analysis.bounced_transactions ?? 0)} />
-              <KVItem k="Avg balance" v={`₹${(cached.statement_analysis.avg_balance || 0).toLocaleString("en-IN")}`} />
-              <KVItem k="EMI load" v={`${cached.statement_analysis.emi_load_pct || 0}%`} />
-              <KVItem k="Months" v={String(cached.statement_analysis.months_analyzed ?? "—")} />
-            </View>
-            <Text style={styles.cachedSummary} numberOfLines={3}>{cached.statement_analysis.summary}</Text>
-          </View>
-        )}
-
-        {cached?.cibil_report && (
-          <View style={styles.cachedCard}>
-            <View style={styles.cachedHead}>
-              <Ionicons name="shield-checkmark" size={16} color={Colors.success} />
-              <Text style={styles.cachedTitle}>CIBIL Report</Text>
-              <Text style={styles.cachedTs}>{new Date(cached.cibil_report.created_at || Date.now()).toLocaleDateString()}</Text>
-            </View>
-            <View style={styles.cachedGrid}>
-              <KVItem k="Score" v={String(cached.cibil_report.score || "—")} color={Colors.primary} />
-              <KVItem k="Band" v={String(cached.cibil_report.band || "—").toUpperCase()} />
-              <KVItem k="On-time" v={`${cached.cibil_report.on_time_payments_pct || 0}%`} />
-              <KVItem k="Utilization" v={`${cached.cibil_report.credit_utilization_pct || 0}%`} />
-              <KVItem k="Accounts" v={String(cached.cibil_report.total_accounts ?? 0)} />
-              <KVItem k="Enquiries (6m)" v={String(cached.cibil_report.hard_enquiries_6m ?? 0)} />
-            </View>
-            <Text style={styles.cachedSummary} numberOfLines={3}>{cached.cibil_report.summary}</Text>
-          </View>
-        )}
-
-
-        {/* Borrower profile */}
-        <Card style={{ marginTop: Spacing.md }}>
-          <Text style={styles.sectionTitle}>Borrower profile</Text>
-          <Row label="Monthly income" value={`$${b.monthly_income.toLocaleString()}`} />
-          <Row label="Employment" value={`${b.employment_years} yrs`} />
-          <Row label="Existing monthly debts" value={`$${b.existing_debts.toLocaleString()}`} />
-          <Row label="Debt-to-income" value={`${dti}%`} />
-          <Row label="Credit history" value={`${b.credit_history_years} yrs`} />
-          <Row label="Prior defaults" value={b.previous_defaults.toString()} last />
         </Card>
       </ScrollView>
 
       {/* Action bar */}
-      {(app.status === "pending" || app.status === "approved") && (
+      {(showActions || showFund) && (
         <View style={styles.actionBar}>
-          {app.status === "pending" && (
-            <View style={{ flexDirection: "row", gap: Spacing.sm, marginBottom: Spacing.sm }}>
+          {showActions && (
+            <View style={{ flexDirection: "row", gap: Spacing.sm }}>
               <View style={{ flex: 1 }}>
                 <PrimaryButton
                   testID="reject-btn"
                   title="Reject"
-                  variant="secondary"
+                  variant="danger"
                   loading={actioning === "reject"}
                   disabled={actioning !== ""}
-                  onPress={() => runAction("reject", "reject")}
+                  onPress={() => setRejectOpen(true)}
                 />
               </View>
               <View style={{ flex: 1 }}>
@@ -337,25 +307,41 @@ export default function ApplicationDetail() {
               </View>
             </View>
           )}
-          <PrimaryButton
-            testID="fund-btn"
-            title={`Fund $${app.amount.toLocaleString()}`}
-            loading={actioning === "fund"}
-            disabled={actioning !== ""}
-            onPress={() => runAction("fund", "fund")}
-          />
+          {showFund && (
+            <PrimaryButton
+              testID="fund-btn"
+              title={`Fund ₹${P.toLocaleString("en-IN")}`}
+              loading={actioning === "fund"}
+              disabled={actioning !== ""}
+              onPress={() => runAction("fund", "fund")}
+            />
+          )}
         </View>
       )}
-    </SafeAreaView>
-  );
-}
 
-function Row({ label, value, last }: { label: string; value: string; last?: boolean }) {
-  return (
-    <View style={[rowStyles.row, !last && rowStyles.divider]}>
-      <Text style={rowStyles.label}>{label}</Text>
-      <Text style={rowStyles.value}>{value}</Text>
-    </View>
+      {/* Reject reason modal */}
+      <Modal visible={rejectOpen} transparent animationType="slide" onRequestClose={() => setRejectOpen(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalSheet}>
+            <Text style={{ fontSize: 18, fontWeight: "800", color: Colors.textPrimary }}>Reject application</Text>
+            <Text style={{ color: Colors.textSecondary, marginTop: 6, marginBottom: Spacing.md }}>Add a short reason for the audit trail.</Text>
+            <Input
+              testID="reject-reason"
+              placeholder="e.g. High bounce risk, low CIBIL"
+              value={rejectReason}
+              onChangeText={setRejectReason}
+              multiline
+              numberOfLines={3}
+              style={{ height: 90, textAlignVertical: "top", paddingTop: 12 }}
+            />
+            <View style={{ height: Spacing.md }} />
+            <PrimaryButton testID="confirm-reject" title="Confirm rejection" variant="danger" loading={actioning === "reject"} onPress={confirmReject} />
+            <View style={{ height: Spacing.sm }} />
+            <PrimaryButton title="Cancel" variant="secondary" onPress={() => setRejectOpen(false)} />
+          </View>
+        </View>
+      </Modal>
+    </SafeAreaView>
   );
 }
 
@@ -377,116 +363,72 @@ function KVItem({ k, v, color }: { k: string; v: string; color?: string }) {
   );
 }
 
-const rowStyles = StyleSheet.create({
-  row: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 12 },
-  divider: { borderBottomWidth: 1, borderBottomColor: Colors.borderLight },
-  label: { color: Colors.textSecondary, fontSize: 14 },
-  value: { color: Colors.textPrimary, fontSize: 15, fontWeight: "700" },
-});
-
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   topBar: { flexDirection: "row", alignItems: "center", paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm },
   backBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.surface, alignItems: "center", justifyContent: "center", ...Shadows.card },
   topTitle: { flex: 1, textAlign: "center", fontSize: 18, fontWeight: "800", color: Colors.textPrimary },
-  borrowerHeader: { flexDirection: "row", alignItems: "center", gap: Spacing.md },
-  avatar: { width: 72, height: 72, borderRadius: 36, backgroundColor: Colors.bgAlt },
 
-  clientHeader: { marginBottom: Spacing.md },
-  clientName: { fontSize: 24, fontWeight: "800", color: Colors.textPrimary, letterSpacing: -0.3 },
-  clientMetaRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 6 },
-  clientMeta: { color: Colors.textSecondary, fontSize: 13, fontWeight: "600" },
-  dotSep: { width: 3, height: 3, borderRadius: 1.5, backgroundColor: Colors.textMuted },
+  h1: { fontSize: 22, fontWeight: "800", color: Colors.textPrimary, letterSpacing: -0.3 },
+  h1Sub: { color: Colors.textSecondary, fontSize: 13, marginTop: 4, marginBottom: Spacing.sm },
 
-  summaryCard: {
-    backgroundColor: Colors.surface, borderRadius: Radii.xl, padding: Spacing.lg,
-    marginBottom: Spacing.md, borderWidth: 1, borderColor: Colors.borderLight,
-    ...Shadows.card,
+  clientRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  clientName: { fontSize: 17, fontWeight: "800", color: Colors.textPrimary },
+  clientSub: { color: Colors.textSecondary, fontSize: 13, marginTop: 2 },
+
+  riskCard: {
+    flexDirection: "row", alignItems: "center", gap: 12,
+    backgroundColor: "#F8FAFC",
+    borderWidth: 1, borderColor: Colors.borderLight,
+    borderRadius: Radii.xl, padding: Spacing.md, marginTop: Spacing.md,
   },
-  summaryHeaderRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  summaryHeaderTitle: { fontSize: 11, fontWeight: "800", color: Colors.textMuted, letterSpacing: 1 },
-  riskChip: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 4, borderRadius: Radii.pill, borderWidth: 1 },
-  riskDot: { width: 8, height: 8, borderRadius: 4 },
-  riskChipText: { fontWeight: "800", fontSize: 11, letterSpacing: 0.3 },
-  summaryAmount: { fontSize: 36, fontWeight: "800", color: Colors.textPrimary, marginTop: 8, letterSpacing: -0.7 },
-  summaryPurpose: { color: Colors.textSecondary, fontSize: 13, marginTop: 2, fontWeight: "600" },
+  riskDot: { width: 10, height: 10, borderRadius: 5 },
+  riskLabel: { fontSize: 10, fontWeight: "800", letterSpacing: 0.6, color: Colors.textMuted },
+  riskValue: { fontSize: 20, fontWeight: "800", marginTop: 3, letterSpacing: -0.3 },
+  riskSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
 
+  placeholderCard: {
+    flexDirection: "row", alignItems: "center", gap: 10,
+    backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.borderLight,
+    borderRadius: Radii.xl, padding: Spacing.md, marginTop: Spacing.md,
+  },
+  placeholderTxt: { color: Colors.textSecondary, fontSize: 13 },
+
+  sectionTitle: { fontSize: 14, fontWeight: "800", color: Colors.textPrimary, marginBottom: 10, letterSpacing: 0.3 },
+
+  summaryAmount: { fontSize: 32, fontWeight: "800", color: Colors.textPrimary, letterSpacing: -0.5 },
+  summaryPurpose: { color: Colors.textSecondary, fontSize: 12, marginTop: 2, fontWeight: "600" },
   summaryGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: Spacing.md },
   sumItem: {
     width: "48%", backgroundColor: Colors.bgAlt, borderRadius: Radii.lg,
     paddingHorizontal: 12, paddingVertical: 10,
   },
-  sumItemHi: { backgroundColor: Colors.primarySoft ?? (Colors.primary + "12"), borderWidth: 1, borderColor: Colors.primary + "2A" },
+  sumItemHi: { backgroundColor: Colors.primary + "12", borderWidth: 1, borderColor: Colors.primary + "2A" },
   sumLabel: { fontSize: 11, color: Colors.textMuted, fontWeight: "700", letterSpacing: 0.4 },
   sumValue: { fontSize: 15, fontWeight: "800", color: Colors.textPrimary, marginTop: 2 },
 
-  aiRecoRow: {
-    flexDirection: "row", alignItems: "center", gap: 8, marginTop: Spacing.md,
-    paddingTop: Spacing.md, borderTopWidth: 1, borderTopColor: Colors.borderLight,
-  },
-  aiRecoLabel: { flex: 1, color: Colors.textSecondary, fontSize: 12, fontWeight: "700", letterSpacing: 0.3 },
-  aiRecoValue: { fontSize: 13, fontWeight: "800" },
-
-  cachedCard: {
-    backgroundColor: Colors.surface, borderRadius: Radii.xl, padding: Spacing.lg,
-    marginBottom: Spacing.md, borderWidth: 1, borderColor: Colors.borderLight, ...Shadows.card,
-  },
-  cachedHead: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
-  cachedTitle: { flex: 1, fontSize: 14, fontWeight: "800", color: Colors.textPrimary, letterSpacing: 0.3 },
-  cachedTs: { fontSize: 11, color: Colors.textMuted, fontWeight: "600" },
-  cachedGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 10 },
-  kv: { width: "48%", backgroundColor: Colors.bgAlt, padding: 10, borderRadius: Radii.md },
-  kvKey: { fontSize: 11, color: Colors.textMuted, fontWeight: "700", letterSpacing: 0.4 },
-  kvVal: { fontSize: 14, fontWeight: "800", color: Colors.textPrimary, marginTop: 3 },
-  cachedSummary: { fontSize: 12, color: Colors.textSecondary, lineHeight: 17 },
-
+  // Audit stamp
   stampCard: {
     backgroundColor: Colors.surface, borderRadius: Radii.xl, padding: Spacing.lg,
-    marginBottom: Spacing.md, borderWidth: 2, ...Shadows.card,
+    marginTop: Spacing.sm, borderWidth: 2, ...Shadows.card,
   },
   stampHead: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
   stampTitle: { flex: 1, fontSize: 15, fontWeight: "800", letterSpacing: 0.3 },
   stampTs: { fontSize: 11, color: Colors.textMuted, fontWeight: "600" },
   stampGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  kv: { width: "48%", backgroundColor: Colors.bgAlt, padding: 10, borderRadius: Radii.md },
+  kvKey: { fontSize: 11, color: Colors.textMuted, fontWeight: "700", letterSpacing: 0.4 },
+  kvVal: { fontSize: 14, fontWeight: "800", color: Colors.textPrimary, marginTop: 3 },
   stampReason: { marginTop: Spacing.md, paddingTop: Spacing.md, borderTopWidth: 1, borderTopColor: Colors.borderLight },
   stampReasonLbl: { fontSize: 11, color: Colors.textMuted, fontWeight: "800", letterSpacing: 0.5 },
   stampReasonTxt: { fontSize: 13, color: Colors.textPrimary, marginTop: 4, lineHeight: 19 },
-  stampRisk: { fontSize: 12, color: Colors.textSecondary, marginTop: 4 },
-  name: { fontSize: 22, fontWeight: "800", color: Colors.textPrimary },
-  meta: { color: Colors.textSecondary, fontSize: 14, marginTop: 2 },
-  label: { fontSize: 11, color: Colors.textMuted, fontWeight: "700", letterSpacing: 0.5 },
-  bigAmount: { fontSize: 36, fontWeight: "800", color: Colors.textPrimary, marginTop: 6, letterSpacing: -0.5 },
-  metaRow: { flexDirection: "row", justifyContent: "space-between", marginTop: Spacing.md },
-  value: { fontSize: 15, fontWeight: "700", color: Colors.textPrimary, marginTop: 2 },
-  aiCard: {
-    marginTop: Spacing.md, borderRadius: Radii.xl, padding: Spacing.lg,
-    backgroundColor: "#ECFEFF", borderWidth: 1, borderColor: Colors.success + "33",
-  },
-  aiHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
-  aiIcon: { width: 34, height: 34, borderRadius: 17, backgroundColor: Colors.primary, alignItems: "center", justifyContent: "center" },
-  aiTitle: { flex: 1, fontSize: 16, fontWeight: "800", color: Colors.textPrimary },
-  rescoreBtn: {
-    width: 36, height: 36, borderRadius: 18, backgroundColor: "#fff",
-    alignItems: "center", justifyContent: "center", ...Shadows.card,
-  },
-  scoreRow: { flexDirection: "row", alignItems: "center", marginTop: Spacing.md },
-  scoreCircle: {
-    width: 110, height: 110, borderRadius: 55, backgroundColor: "#fff",
-    alignItems: "center", justifyContent: "center", borderWidth: 4, borderColor: Colors.primary,
-  },
-  scoreNumber: { fontSize: 32, fontWeight: "800", color: Colors.primary },
-  scoreMax: { fontSize: 11, color: Colors.textMuted, marginTop: -2 },
-  riskPill: { alignSelf: "flex-start", paddingHorizontal: 12, paddingVertical: 5, borderRadius: Radii.pill, borderWidth: 1 },
-  riskText: { fontWeight: "800", fontSize: 12 },
-  reasoning: { color: Colors.textSecondary, fontSize: 13, marginTop: 8, lineHeight: 18 },
-  factorRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, borderTopWidth: 1, borderTopColor: Colors.success + "22" },
-  factorIcon: { width: 28, height: 28, borderRadius: 14, alignItems: "center", justifyContent: "center" },
-  factorLabel: { fontSize: 14, fontWeight: "700", color: Colors.textPrimary },
-  factorDetail: { fontSize: 12, color: Colors.textSecondary, marginTop: 1 },
-  sectionTitle: { fontSize: 16, fontWeight: "800", color: Colors.textPrimary, marginBottom: 4 },
+
   actionBar: {
     position: "absolute", bottom: 0, left: 0, right: 0,
     backgroundColor: Colors.surface, padding: Spacing.md, paddingBottom: Spacing.lg,
     borderTopWidth: 1, borderTopColor: Colors.borderLight,
   },
+
+  modalBackdrop: { flex: 1, backgroundColor: "rgba(15,23,42,0.55)", justifyContent: "flex-end" },
+  modalSheet: { backgroundColor: Colors.surface, padding: Spacing.lg, borderTopLeftRadius: Radii.xl, borderTopRightRadius: Radii.xl },
 });

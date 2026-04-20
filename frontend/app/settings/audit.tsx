@@ -131,76 +131,15 @@ export default function AuditScreen() {
               ))}
             </Card>
 
-            {/* Reconciliation */}
-            {data.reconciliation && (
-              <Card style={{ marginTop: Spacing.md }}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 }}>
-                  <Ionicons name="git-compare" size={18} color={Colors.primary} />
-                  <Text style={[styles.sectionTitle, { marginBottom: 0 }]}>Reconciliation</Text>
-                  <View style={[{ marginLeft: "auto", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 }, { backgroundColor: data.reconciliation.reconciled ? Colors.success + "1A" : Colors.danger + "1A" }]}>
-                    <Text style={{ fontSize: 11, fontWeight: "800", color: data.reconciliation.reconciled ? Colors.success : Colors.danger }}>
-                      {data.reconciliation.reconciled ? "RECONCILED" : "VARIANCE"}
-                    </Text>
-                  </View>
-                </View>
-                <View style={styles.reconRow}><Text style={styles.reconLbl}>Opening balance</Text><Text style={styles.reconVal}>₹{data.reconciliation.opening_balance.toLocaleString("en-IN")}</Text></View>
-                <View style={styles.reconRow}><Text style={[styles.reconLbl, { color: Colors.success }]}>+ Inflow</Text><Text style={[styles.reconVal, { color: Colors.success }]}>₹{data.reconciliation.inflow.toLocaleString("en-IN")}</Text></View>
-                <View style={styles.reconRow}><Text style={[styles.reconLbl, { color: Colors.primary }]}>− Outflow</Text><Text style={[styles.reconVal, { color: Colors.primary }]}>₹{data.reconciliation.outflow.toLocaleString("en-IN")}</Text></View>
-                <View style={[styles.reconRow, styles.reconTotal]}><Text style={[styles.reconLbl, { fontWeight: "800" }]}>= Closing balance</Text><Text style={[styles.reconVal, { fontWeight: "900", color: Colors.textPrimary }]}>₹{data.reconciliation.closing_balance.toLocaleString("en-IN")}</Text></View>
-                <Text style={styles.reconFormula}>{data.reconciliation.formula}</Text>
-              </Card>
-            )}
-
-            {/* Variance / Exceptions */}
-            {data.variance && data.variance.length > 0 && (
-              <Card style={{ marginTop: Spacing.md }}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 }}>
-                  <Ionicons name="warning" size={18} color={Colors.danger} />
-                  <Text style={[styles.sectionTitle, { marginBottom: 0 }]}>Variance / Exceptions</Text>
-                </View>
-                {data.variance.map((v, i) => {
-                  const col = v.severity === "high" ? Colors.danger : v.severity === "medium" ? Colors.warning : Colors.textSecondary;
-                  return (
-                    <View key={i} style={[styles.varRow, { borderLeftColor: col }]}>
-                      <View style={[styles.varPill, { backgroundColor: col + "1A" }]}>
-                        <Text style={[styles.varPillTxt, { color: col }]}>{v.type}</Text>
-                      </View>
-                      <Text style={styles.varDetail}>{v.detail}</Text>
-                    </View>
-                  );
-                })}
-              </Card>
-            )}
-
-            {/* Inflow / Outflow transactions preview */}
-            {data.inflow_transactions && data.inflow_transactions.length > 0 && (
-              <Card style={{ marginTop: Spacing.md }}>
-                <Text style={styles.sectionTitle}>Recent inflows ({data.inflow_transactions.length})</Text>
-                {data.inflow_transactions.slice(0, 8).map((t, i) => (
-                  <View key={i} style={styles.txRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.txName} numberOfLines={1}>{t.counterparty}</Text>
-                      <Text style={styles.txMeta}>{t.date} · {t.mode} · {t.frequency}</Text>
-                    </View>
-                    <Text style={[styles.txAmt, { color: Colors.success }]}>+₹{t.amount.toLocaleString("en-IN")}</Text>
-                  </View>
-                ))}
-              </Card>
-            )}
-            {data.outflow_transactions && data.outflow_transactions.length > 0 && (
-              <Card style={{ marginTop: Spacing.md }}>
-                <Text style={styles.sectionTitle}>Recent outflows ({data.outflow_transactions.length})</Text>
-                {data.outflow_transactions.slice(0, 8).map((t, i) => (
-                  <View key={i} style={styles.txRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.txName} numberOfLines={1}>{t.counterparty}</Text>
-                      <Text style={styles.txMeta}>{t.date} · {t.mode} · {t.category}</Text>
-                    </View>
-                    <Text style={[styles.txAmt, { color: Colors.primary }]}>-₹{t.amount.toLocaleString("en-IN")}</Text>
-                  </View>
-                ))}
-              </Card>
-            )}
+            {/* Reconciliation, Variance, and full transaction ledger are
+                intentionally NOT rendered on the screen. They live ONLY in the
+                downloadable Audit PDF for a clean, fast approval UX. */}
+            <View style={styles.pdfHint}>
+              <Ionicons name="document-lock" size={16} color={Colors.primary} />
+              <Text style={styles.pdfHintTxt}>
+                Full reconciliation, variance & exception ledger are available in the downloadable Audit PDF.
+              </Text>
+            </View>
 
             <View style={{ marginTop: Spacing.lg }}>
               <PrimaryButton testID="audit-download" title="Download audit report (PDF)" onPress={downloadAuditPdf} />
@@ -246,4 +185,10 @@ const styles = StyleSheet.create({
   col: { fontSize: 12 },
   colMonth: { flex: 1, fontWeight: "700", color: Colors.textPrimary },
   colAmt: { width: 96, textAlign: "right", color: Colors.textSecondary },
+  pdfHint: {
+    flexDirection: "row", alignItems: "center", gap: 10,
+    backgroundColor: Colors.primary + "10", borderWidth: 1, borderColor: Colors.primary + "33",
+    borderRadius: Radii.md, padding: 12, marginTop: Spacing.md,
+  },
+  pdfHintTxt: { flex: 1, color: Colors.textSecondary, fontSize: 12, lineHeight: 18 },
 });
