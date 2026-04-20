@@ -1,0 +1,108 @@
+{
+  "theme": "Light",
+  "archetype": "6 (Vibrant Play) - Playful Fintech",
+  "typography": {
+    "heading_font": "Outfit",
+    "body_font": "DM Sans",
+    "font_urls": [
+      "https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap",
+      "https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap"
+    ],
+    "hierarchy": {
+      "h1": "text-3xl font-bold tracking-tight text-[#0F172A]",
+      "h2": "text-2xl font-bold tracking-tight text-[#0F172A]",
+      "h3": "text-xl font-semibold text-[#0F172A]",
+      "body": "text-base font-normal text-[#64748B]",
+      "caption": "text-sm font-medium uppercase tracking-wider text-[#64748B]"
+    }
+  },
+  "colors": {
+    "primary": "#3A86FF",
+    "secondary": "#FF9F1C",
+    "success": "#06D6A0",
+    "warning": "#FFBE0B",
+    "danger": "#EF476F",
+    "background_outer": "#E2E8F0",
+    "background_app": "#F4F6F8",
+    "surface": "#FFFFFF",
+    "text_primary": "#0F172A",
+    "text_secondary": "#64748B",
+    "ai_gradient": "bg-gradient-to-r from-[#06D6A0] to-[#3A86FF]",
+    "forbidden_colors": ["#9D4CDD", "#1B93A4", "#7351B7", "purple gradients on white"]
+  },
+  "spacing_and_layout": {
+    "app_wrapper": "max-w-md mx-auto w-full min-h-screen bg-[#F4F6F8] relative shadow-2xl overflow-x-hidden flex flex-col",
+    "screen_padding": "px-6 py-6 pb-24",
+    "grid_system": "8pt grid (gap-2, gap-4, gap-6, p-4, p-6)",
+    "border_radius": "rounded-3xl for main cards, rounded-2xl for inner elements, rounded-full for buttons and badges"
+  },
+  "components": {
+    "button_primary": "w-full h-14 bg-[#3A86FF] text-white rounded-full flex items-center justify-center font-bold text-lg active:scale-95 transition-transform shadow-[0_4px_14px_0_rgba(58,134,255,0.39)]",
+    "button_secondary": "w-full h-14 bg-white text-[#0F172A] border-2 border-slate-200 rounded-full flex items-center justify-center font-bold text-lg active:scale-95 transition-transform active:bg-slate-50",
+    "button_google": "w-full h-14 bg-white text-[#0F172A] border-2 border-slate-200 rounded-full flex items-center justify-center font-bold text-lg active:scale-95 transition-transform gap-3",
+    "card": "bg-white rounded-3xl p-6 shadow-sm border border-slate-100",
+    "input_field": "w-full h-14 bg-white border-2 border-slate-200 rounded-2xl px-5 text-base focus:border-[#3A86FF] focus:ring-0 outline-none transition-all placeholder:text-slate-400",
+    "bottom_nav": "absolute bottom-0 left-0 right-0 h-20 bg-white/90 backdrop-blur-xl border-t border-slate-100 flex justify-around items-center px-4 z-50",
+    "badge_ai_score": "inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full text-sm font-bold bg-gradient-to-r from-[#06D6A0]/10 to-[#3A86FF]/10 text-[#3A86FF] border border-[#3A86FF]/20",
+    "list_item": "flex items-center gap-4 p-4 bg-white rounded-2xl mb-3 active:scale-[0.98] transition-transform shadow-sm border border-slate-50"
+  },
+  "icons_and_assets": {
+    "icon_library": "lucide-react",
+    "images": [
+      {
+        "category": "illustration_empty_state",
+        "url": "https://static.prod-images.emergentagent.com/jobs/b97ea820-9246-4c66-95e8-0a7c3405dd9e/images/5290229345035e501b9fd2dbaadf464235420cbe6505544b1da1bb3afb5f71e5.png",
+        "description": "3D playful empty box for 'No pending loans' or empty lists"
+      },
+      {
+        "category": "illustration_growth",
+        "url": "https://static.prod-images.emergentagent.com/jobs/b97ea820-9246-4c66-95e8-0a7c3405dd9e/images/2a19192cfda126f4f2e1b658c0a3c5261e60aa82e402dac7c7e030c37a0cf2ac.png",
+        "description": "3D rocket launching for Dashboard analytics and portfolio growth"
+      },
+      {
+        "category": "icon_secure",
+        "url": "https://static.prod-images.emergentagent.com/jobs/b97ea820-9246-4c66-95e8-0a7c3405dd9e/images/0374309247118c7aa2b0d747fd7062f80805f3c719877fcf47e47dbe4fac2348.png",
+        "description": "3D playful shield icon for AI Credit Score secure badge"
+      },
+      {
+        "category": "icon_coin",
+        "url": "https://static.prod-images.emergentagent.com/jobs/b97ea820-9246-4c66-95e8-0a7c3405dd9e/images/4a0947b8cd90531a45ae3e944cd02aa2374f9d367cc31d65c418fd3ac460f818.png",
+        "description": "3D playful coin icon for Funds/Total Funded cards"
+      },
+      {
+        "category": "avatar_borrower_1",
+        "url": "https://images.unsplash.com/photo-1758600587839-56ba05596c69?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2NDN8MHwxfHNlYXJjaHwzfHxzbWlsaW5nJTIwY2FzdWFsJTIwYnVzaW5lc3MlMjBwZXJzb24lMjBwb3J0cmFpdHxlbnwwfHx8fDE3NzY2NzMwNjB8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Smiling borrower face for application list"
+      },
+      {
+        "category": "avatar_borrower_2",
+        "url": "https://images.unsplash.com/photo-1765648580808-76d75e4f3833?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2NDN8MHwxfHNlYXJjaHwxfHxzbWlsaW5nJTIwY2FzdWFsJTIwYnVzaW5lc3MlMjBwZXJzb24lMjBwb3J0cmFpdHxlbnwwfHx8fDE3NzY2NzMwNjB8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Borrower avatar 2"
+      },
+      {
+        "category": "avatar_borrower_3",
+        "url": "https://images.unsplash.com/photo-1621808886790-12905b142573?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2NDN8MHwxfHNlYXJjaHwyfHxzbWlsaW5nJTIwY2FzdWFsJTIwYnVzaW5lc3MlMjBwZXJzb24lMjBwb3J0cmFpdHxlbnwwfHx8fDE3NzY2NzMwNjB8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Borrower avatar 3"
+      }
+    ]
+  },
+  "animations_and_interactions": {
+    "hover_states": "Use 'active:scale-95' or 'active:scale-[0.98]' extensively. Mobile apps do not have hover states. Focus on touch feedback.",
+    "page_transitions": "Implement smooth sliding or fading if a router allows. For modals, slide up from bottom.",
+    "loading": "Pulse animations on skeleton loaders (rounded-2xl) instead of standard spinners."
+  },
+  "accessibility": {
+    "contrast": "Ensure white text on #3A86FF meets 4.5:1 contrast. Use darker shades for text on light backgrounds.",
+    "touch_targets": "All interactive elements must be at least 44x44px. Use h-12 w-12 minimum for icon buttons.",
+    "test_ids": "Every button, link, and input MUST have a role-based data-testid attribute (e.g., data-testid='approve-loan-button')."
+  },
+  "instructions_to_main_agent": [
+    "This is a mobile web app simulating an Expo React Native view. You must wrap the entire application in a centered container (`max-w-md mx-auto min-h-screen bg-slate-200`) and the inner app in (`w-full min-h-screen bg-[#F4F6F8] relative overflow-hidden text-[#0F172A]`).",
+    "Use standard Tailwind HTML (divs, spans) to create the layout since it's a mobile interface simulation. The components are specified for standard React JS web (.js).",
+    "Ensure large touch targets (min-h-12) for all clickable elements to respect Expo/mobile app constraints.",
+    "Avoid purple gradients (AI slop) entirely. Use the 'AI Credit Score' gradient defined in colors (Mint to Blue).",
+    "Include bottom navigation fixed at the bottom (`absolute bottom-0 w-full`) of the max-w-md container. Do NOT make it fixed to the browser window, fix it to the mobile wrapper.",
+    "Do NOT output a .tsx file format guideline. The codebase uses standard React JSX (.jsx) or plain .js files.",
+    "Always add `data-testid` to interactive elements."
+  ]
+}
