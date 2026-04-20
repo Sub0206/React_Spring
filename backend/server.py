@@ -1452,6 +1452,87 @@ async def record_repayment(loan_id: str, month: int, paid_date: Optional[str] = 
     doc["status"] = new_status
     return Loan(**doc)
 
+
+@api.post("/loans/{loan_id}/undo-pay/{month}", response_model=Loan)
+async def undo_repayment(loan_id: str, month: int, current: UserPublic = Depends(get_current_user)):
+    """Rollback a mistakenly recorded payment. Restores status to upcoming,
+    clears paid_at/was_late, decrements paid_amount, logs a reversal txn."""
+    doc = await db.loans.find_one({"loan_id": loan_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Loan not found")
+    schedule = doc["repayment_schedule"]
+    target = next((s for s in schedule if s["month"] == month), None)
+    if not target:
+        raise HTTPException(400, "Invalid month")
+    if target["status"] != "paid":
+        raise HTTPException(400, "This EMI is not marked as paid — nothing to undo.")
+    amt = float(target.get("amount", 0))
+    target["status"] = "upcoming"
+    target["paid_at"] = None
+    target["was_late"] = False
+    new_paid = max(0.0, float(doc.get("paid_amount", 0)) - amt)
+    new_status = "active"  # reverting always puts loan back to active
+    await db.loans.update_one(
+        {"loan_id": loan_id},
+        {"$set": {"repayment_schedule": schedule, "paid_amount": new_paid, "status": new_status}},
+    )
+    now = datetime.now(timezone.utc)
+    await db.transactions.insert_one({
+        "transaction_id": f"txn_{uuid.uuid4().hex[:10]}",
+        "type": "fee",  # reversal — not disbursement or repayment
+        "amount": -amt,
+        "loan_id": loan_id,
+        "borrower_name": doc["borrower"]["name"],
+        "description": f"Rollback of repayment #{month} for {doc['borrower']['name']}",
+        "created_at": now,
+    })
+    await _notify(current.user_id, "Payment rolled back",
+                  f"Undo · ₹{amt:,.2f} (Month {month}) for {doc['borrower']['name']}", "repayment")
+    doc["repayment_schedule"] = schedule
+    doc["paid_amount"] = new_paid
+    doc["status"] = new_status
+    return Loan(**doc)
+
+
+@api.post("/loans/{loan_id}/reschedule/{month}", response_model=Loan)
+async def reschedule_emi(
+    loan_id: str, month: int, new_due_date: str,
+    current: UserPublic = Depends(get_current_user),
+):
+    """Reschedule a single EMI's due date (only allowed if the EMI is not yet paid)."""
+    doc = await db.loans.find_one({"loan_id": loan_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Loan not found")
+    schedule = doc["repayment_schedule"]
+    target = next((s for s in schedule if s["month"] == month), None)
+    if not target:
+        raise HTTPException(400, "Invalid month")
+    if target["status"] == "paid":
+        raise HTTPException(400, "Cannot reschedule a paid EMI. Undo first.")
+    try:
+        new_due = datetime.fromisoformat(new_due_date.replace("Z", "+00:00"))
+    except Exception:
+        raise HTTPException(400, "Invalid new_due_date (expected ISO 8601).")
+    if new_due.tzinfo is None:
+        new_due = new_due.replace(tzinfo=timezone.utc)
+    old_due = target["due_date"]
+    if isinstance(old_due, str):
+        try:
+            old_due = datetime.fromisoformat(old_due)
+        except Exception:
+            old_due = None
+    target["due_date"] = new_due
+    await db.loans.update_one(
+        {"loan_id": loan_id},
+        {"$set": {"repayment_schedule": schedule}},
+    )
+    await _notify(
+        current.user_id, "EMI rescheduled",
+        f"Month {month} for {doc['borrower']['name']} moved to {new_due.date()}", "repayment",
+    )
+    doc["repayment_schedule"] = schedule
+    return Loan(**doc)
+
 # ---------- Transactions ----------
 @api.get("/transactions", response_model=List[Transaction])
 async def list_transactions(current: UserPublic = Depends(get_current_user)):

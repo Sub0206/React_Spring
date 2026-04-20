@@ -1,184 +1,215 @@
-"""Iteration 7 LendIQ backend regression tests.
-
-Targets (no backend code changed in iter 7):
- 1. Auth send-otp/verify-otp (login for pre-existing 9876543210)
- 2. /api/applications?status=pending|approved|funded|rejected each → 200 + list
- 3. /api/loans → list with `repayment_schedule` (month, due_date, amount, status, was_late)
- 4. /api/dashboard → overdue_count, overdue_amount, inflow_chart, outflow_chart
- 5. /api/dashboard/overdue → {overdue_loans: [...]}
-"""
-from __future__ import annotations
-import os, sys, json, re
+"""Iteration-8 backend tests: reschedule + undo-pay + repay regression."""
+import os
+import sys
+import json
+from datetime import datetime, timezone, timedelta
 import requests
 
 BASE = "https://lending-hub-63.preview.emergentagent.com/api"
 MOBILE = "9876543210"
 
-PASS = []
-FAIL = []
+
+def _p(ok, msg):
+    print(("[PASS] " if ok else "[FAIL] ") + msg)
+    return ok
 
 
-def record(name: str, ok: bool, detail: str = "") -> None:
-    (PASS if ok else FAIL).append((name, detail))
-    prefix = "PASS" if ok else "FAIL"
-    print(f"[{prefix}] {name}" + (f"  — {detail}" if detail else ""))
-
-
-def login() -> str:
-    # Try login first (account likely already exists from prior iterations)
+def login():
     r = requests.post(f"{BASE}/auth/send-otp", json={"mobile": MOBILE, "purpose": "login"}, timeout=20)
-    if r.status_code == 404:
-        # Fall back to signup
-        r = requests.post(
-            f"{BASE}/auth/send-otp",
-            json={"mobile": MOBILE, "purpose": "signup", "name": "Demo Lender"},
-            timeout=20,
-        )
-    if r.status_code != 200:
-        raise RuntimeError(f"send-otp failed {r.status_code} {r.text[:200]}")
-    body = r.json()
-    otp = body.get("demo_otp")
-    if not otp:
-        raise RuntimeError(f"no demo_otp in send-otp response: {body}")
-    record("POST /api/auth/send-otp", True, f"mobile={MOBILE}, demo_otp present")
-
-    r2 = requests.post(f"{BASE}/auth/verify-otp", json={"mobile": MOBILE, "otp": otp}, timeout=20)
-    if r2.status_code != 200:
-        raise RuntimeError(f"verify-otp failed {r2.status_code} {r2.text[:200]}")
-    tok = r2.json().get("access_token")
-    if not tok:
-        raise RuntimeError("no access_token")
-    record("POST /api/auth/verify-otp", True, "access_token returned")
-    return tok
+    r.raise_for_status()
+    otp = r.json()["demo_otp"]
+    r = requests.post(f"{BASE}/auth/verify-otp", json={"mobile": MOBILE, "otp": otp}, timeout=20)
+    r.raise_for_status()
+    return r.json()["access_token"]
 
 
-def test_applications(h: dict) -> None:
-    for st in ("pending", "approved", "funded", "rejected"):
-        r = requests.get(f"{BASE}/applications", params={"status": st}, headers=h, timeout=20)
-        ok = r.status_code == 200 and isinstance(r.json(), list)
-        detail = f"status={r.status_code}, count={len(r.json()) if ok else 'n/a'}"
-        if ok and r.json():
-            # sanity — every item should have status == requested
-            stmatch = all(it.get("status") == st for it in r.json())
-            if not stmatch:
-                ok = False
-                detail += " — MISMATCH: items don't all match requested status"
-        record(f"GET /api/applications?status={st}", ok, detail)
+def main():
+    results = []
+    token = login()
+    H = {"Authorization": f"Bearer {token}"}
 
-
-def test_loans(h: dict) -> list:
-    r = requests.get(f"{BASE}/loans", headers=h, timeout=20)
-    ok_status = r.status_code == 200
-    loans: list = []
-    detail = f"status={r.status_code}"
-    if ok_status:
-        try:
-            loans = r.json()
-        except Exception as e:
-            record("GET /api/loans", False, f"non-JSON body: {e}")
-            return []
-        if not isinstance(loans, list):
-            record("GET /api/loans", False, "response not list")
-            return []
-        detail += f", count={len(loans)}"
-        # Check schedule shape on each loan
-        if loans:
-            required_entry_keys = {"month", "due_date", "amount", "status", "was_late"}
-            bad = []
-            for ln in loans:
-                sched = ln.get("repayment_schedule")
-                if not isinstance(sched, list) or not sched:
-                    bad.append(f"{ln.get('loan_id')}: missing/empty schedule")
-                    continue
-                first = sched[0]
-                missing = required_entry_keys - set(first.keys())
-                if missing:
-                    bad.append(f"{ln.get('loan_id')}: missing keys {missing}")
-            if bad:
-                record("GET /api/loans (schedule shape)", False, "; ".join(bad[:3]))
-                record("GET /api/loans", True, detail + " — schema issues above")
-                return loans
-            record("GET /api/loans", True, detail + " — schedules OK (month,due_date,amount,status,was_late)")
-        else:
-            record("GET /api/loans", True, detail + " — empty list (no loans yet)")
-    else:
-        record("GET /api/loans", False, detail + f" body={r.text[:200]}")
-    return loans
-
-
-def test_dashboard(h: dict) -> None:
-    r = requests.get(f"{BASE}/dashboard", headers=h, timeout=20)
-    if r.status_code != 200:
-        record("GET /api/dashboard", False, f"status={r.status_code} body={r.text[:200]}")
-        return
-    d = r.json()
-    needed = ["overdue_count", "overdue_amount", "inflow_chart", "outflow_chart"]
-    miss = [k for k in needed if k not in d]
-    if miss:
-        record("GET /api/dashboard", False, f"missing keys {miss}")
-        return
-    # shape check for charts
-    shape_ok = True
-    shape_detail = ""
-    for k in ("inflow_chart", "outflow_chart"):
-        v = d[k]
-        if not isinstance(v, list) or not v:
-            shape_ok = False
-            shape_detail = f"{k} not a non-empty list"
+    # Find an active loan with at least one unpaid EMI
+    r = requests.get(f"{BASE}/loans", headers=H, timeout=20)
+    r.raise_for_status()
+    loans = r.json()
+    loan = None
+    unpaid_month = None
+    for L in loans:
+        if L.get("status") != "active":
+            continue
+        for e in L.get("repayment_schedule", []):
+            if e.get("status") != "paid":
+                loan = L
+                unpaid_month = e["month"]
+                break
+        if loan:
             break
-        if not all(isinstance(x, dict) and "label" in x and "value" in x for x in v):
-            shape_ok = False
-            shape_detail = f"{k} items missing label/value"
-            break
-    if not shape_ok:
-        record("GET /api/dashboard", False, shape_detail)
-        return
-    record(
-        "GET /api/dashboard",
-        True,
-        f"overdue_count={d['overdue_count']}, overdue_amount={d['overdue_amount']}, "
-        f"inflow_chart={len(d['inflow_chart'])} pts, outflow_chart={len(d['outflow_chart'])} pts",
+
+    if not loan:
+        print("No active loan with unpaid EMI found — cannot run tests.")
+        sys.exit(2)
+
+    loan_id = loan["loan_id"]
+    print(f"Using loan={loan_id}, unpaid_month={unpaid_month}, borrower={loan['borrower']['name']}")
+
+    # =========================
+    # 1) RESCHEDULE ENDPOINT
+    # =========================
+    print("\n=== Test 1: POST /loans/{id}/reschedule/{month} ===")
+    new_due_iso = "2027-01-15T12:00:00Z"
+    r = requests.post(
+        f"{BASE}/loans/{loan_id}/reschedule/{unpaid_month}",
+        params={"new_due_date": new_due_iso},
+        headers=H, timeout=20,
     )
+    ok1a = r.status_code == 200
+    details = ""
+    if ok1a:
+        data = r.json()
+        ent = next((e for e in data["repayment_schedule"] if e["month"] == unpaid_month), None)
+        got_due = ent["due_date"] if ent else None
+        try:
+            got_dt = datetime.fromisoformat(got_due.replace("Z", "+00:00")) if got_due else None
+        except Exception:
+            got_dt = None
+        expected_dt = datetime(2027, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        ok1a = got_dt is not None and got_dt == expected_dt
+        # confirm full Loan object returned
+        has_fields = all(k in data for k in ["loan_id", "repayment_schedule", "principal", "borrower", "monthly_payment"])
+        ok1a = ok1a and has_fields
+        details = f"status=200, got_due={got_due}, full loan returned={has_fields}"
+    else:
+        details = f"status={r.status_code} body={r.text[:200]}"
+    results.append(_p(ok1a, f"1a: Reschedule unpaid EMI to 2027-01-15 — {details}"))
 
+    # 1b: Reschedule a PAID EMI -> expect 400
+    r = requests.get(f"{BASE}/loans/{loan_id}", headers=H, timeout=20)
+    fresh = r.json()
+    paid_month = next((e["month"] for e in fresh["repayment_schedule"] if e.get("status") == "paid"), None)
+    created_paid_for_test = False
+    if paid_month is None:
+        pay_month = next((e["month"] for e in fresh["repayment_schedule"] if e["month"] != unpaid_month and e.get("status") != "paid"), None)
+        if pay_month is not None:
+            rp = requests.post(f"{BASE}/loans/{loan_id}/repay/{pay_month}", headers=H, timeout=20)
+            if rp.status_code == 200:
+                paid_month = pay_month
+                created_paid_for_test = True
 
-def test_overdue(h: dict) -> None:
-    r = requests.get(f"{BASE}/dashboard/overdue", headers=h, timeout=20)
-    if r.status_code != 200:
-        record("GET /api/dashboard/overdue", False, f"status={r.status_code} body={r.text[:200]}")
-        return
-    d = r.json()
-    if not isinstance(d, dict) or "overdue_loans" not in d or not isinstance(d["overdue_loans"], list):
-        record("GET /api/dashboard/overdue", False, f"unexpected shape: {str(d)[:200]}")
-        return
-    record("GET /api/dashboard/overdue", True, f"overdue_loans count={len(d['overdue_loans'])}")
+    if paid_month is not None:
+        r = requests.post(
+            f"{BASE}/loans/{loan_id}/reschedule/{paid_month}",
+            params={"new_due_date": "2027-03-01T00:00:00Z"},
+            headers=H, timeout=20,
+        )
+        ok1b = r.status_code == 400 and "paid" in r.text.lower() and "undo" in r.text.lower()
+        results.append(_p(ok1b, f"1b: Reschedule PAID EMI rejected (400 w/ 'Cannot reschedule a paid EMI. Undo first.') — status={r.status_code} body={r.text[:200]}"))
+        # cleanup
+        if created_paid_for_test:
+            requests.post(f"{BASE}/loans/{loan_id}/undo-pay/{paid_month}", headers=H, timeout=20)
+    else:
+        results.append(_p(False, "1b: Skipped — could not create a paid EMI to test"))
 
+    # 1c: Invalid ISO -> expect 400
+    r = requests.post(
+        f"{BASE}/loans/{loan_id}/reschedule/{unpaid_month}",
+        params={"new_due_date": "not-a-date"},
+        headers=H, timeout=20,
+    )
+    ok1c = r.status_code == 400
+    results.append(_p(ok1c, f"1c: Invalid ISO rejected (400) — status={r.status_code} body={r.text[:200]}"))
 
-def main() -> int:
-    print(f"BASE = {BASE}")
-    try:
-        token = login()
-    except Exception as e:
-        record("auth", False, str(e))
-        _summary()
-        return 1
-    h = {"Authorization": f"Bearer {token}"}
-    test_applications(h)
-    test_loans(h)
-    test_dashboard(h)
-    test_overdue(h)
-    return _summary()
+    # =========================
+    # 2) UNDO-PAY ENDPOINT
+    # =========================
+    print("\n=== Test 2: POST /loans/{id}/undo-pay/{month} ===")
 
+    r = requests.get(f"{BASE}/loans/{loan_id}", headers=H, timeout=20)
+    fresh = r.json()
+    target_month = next((e["month"] for e in fresh["repayment_schedule"] if e.get("status") != "paid"), None)
+    if target_month is None:
+        results.append(_p(False, "2: No unpaid EMI available to mark+undo"))
+    else:
+        before_paid_amount = fresh["paid_amount"]
+        emi_amount = next(e["amount"] for e in fresh["repayment_schedule"] if e["month"] == target_month)
 
-def _summary() -> int:
-    print("\n==== SUMMARY ====")
-    print(f"PASSED: {len(PASS)}")
-    for n, d in PASS:
-        print(f"  ✓ {n}  {d}")
-    print(f"FAILED: {len(FAIL)}")
-    for n, d in FAIL:
-        print(f"  ✗ {n}  {d}")
-    return 0 if not FAIL else 1
+        # Mark paid
+        r = requests.post(f"{BASE}/loans/{loan_id}/repay/{target_month}", headers=H, timeout=20)
+        ok_repay = r.status_code == 200
+        if not ok_repay:
+            results.append(_p(False, f"2-setup: repay failed: status={r.status_code} {r.text[:200]}"))
+        else:
+            paid_snapshot = r.json()
+            after_paid = paid_snapshot["paid_amount"]
+            print(f"  after repay: paid_amount={after_paid} (was {before_paid_amount}, emi={emi_amount})")
+
+            # Undo
+            r = requests.post(f"{BASE}/loans/{loan_id}/undo-pay/{target_month}", headers=H, timeout=20)
+            ok2a = r.status_code == 200
+            if ok2a:
+                data = r.json()
+                ent = next(e for e in data["repayment_schedule"] if e["month"] == target_month)
+                new_paid = data["paid_amount"]
+                cond1 = abs(new_paid - (after_paid - emi_amount)) < 0.01
+                cond2 = ent["status"] == "upcoming"
+                cond3 = ent.get("paid_at") is None
+                cond4 = ent.get("was_late") is False
+                ok2a = cond1 and cond2 and cond3 and cond4
+                results.append(_p(ok2a,
+                    f"2a: Undo-pay: paid_amount decremented={cond1} (new={new_paid}, expected={after_paid - emi_amount}), "
+                    f"status=upcoming({cond2}), paid_at=None({cond3}), was_late=False({cond4})"))
+            else:
+                results.append(_p(False, f"2a: undo-pay failed: status={r.status_code} {r.text[:200]}"))
+
+            # 2b: Undo again -> 400 "not marked as paid"
+            r = requests.post(f"{BASE}/loans/{loan_id}/undo-pay/{target_month}", headers=H, timeout=20)
+            ok2b = r.status_code == 400 and ("not marked as paid" in r.text.lower())
+            results.append(_p(ok2b, f"2b: Double-undo rejected (400, 'not marked as paid') — status={r.status_code} body={r.text[:200]}"))
+
+            # 2c: Transaction inserted (fee, negative amount, this loan)
+            r = requests.get(f"{BASE}/transactions", headers=H, timeout=20)
+            txns = r.json() if r.status_code == 200 else []
+            match = [t for t in txns if t.get("loan_id") == loan_id and t.get("type") == "fee" and float(t.get("amount", 0)) < 0]
+            ok2c = len(match) > 0
+            sample = match[0] if match else None
+            results.append(_p(ok2c, f"2c: Reversal txn logged (type=fee, amount<0) — found={len(match)} sample_amt={sample['amount'] if sample else None} desc={sample['description'] if sample else None}"))
+
+    # =========================
+    # 3) REGRESSION: repay with paid_date
+    # =========================
+    print("\n=== Test 3: Regression — repay with paid_date (was_late) ===")
+    r = requests.get(f"{BASE}/loans/{loan_id}", headers=H, timeout=20)
+    fresh = r.json()
+    reg_month = next((e["month"] for e in fresh["repayment_schedule"] if e.get("status") != "paid"), None)
+    if reg_month is None:
+        results.append(_p(False, "3: No unpaid EMI left for regression"))
+    else:
+        ent = next(e for e in fresh["repayment_schedule"] if e["month"] == reg_month)
+        due_s = ent["due_date"]
+        due = datetime.fromisoformat(due_s.replace("Z", "+00:00"))
+        if due.tzinfo is None:
+            due = due.replace(tzinfo=timezone.utc)
+        late_date = (due + timedelta(days=5)).isoformat().replace("+00:00", "Z")
+        r = requests.post(
+            f"{BASE}/loans/{loan_id}/repay/{reg_month}",
+            params={"paid_date": late_date},
+            headers=H, timeout=20,
+        )
+        ok3 = r.status_code == 200
+        if ok3:
+            data = r.json()
+            e2 = next(e for e in data["repayment_schedule"] if e["month"] == reg_month)
+            ok3 = (e2.get("was_late") is True) and (e2.get("status") == "paid")
+            results.append(_p(ok3, f"3: repay?paid_date=due+5d → was_late=True (got {e2.get('was_late')}), status=paid (got {e2.get('status')})"))
+            # undo to leave loan clean
+            requests.post(f"{BASE}/loans/{loan_id}/undo-pay/{reg_month}", headers=H, timeout=20)
+        else:
+            results.append(_p(False, f"3: repay failed: status={r.status_code} {r.text[:200]}"))
+
+    passed = sum(1 for x in results if x)
+    total = len(results)
+    print(f"\n====== {passed}/{total} PASSED ======")
+    sys.exit(0 if passed == total else 1)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

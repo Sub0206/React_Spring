@@ -157,6 +157,39 @@ backend:
       - working: true
         agent: "testing"
         comment: "Iteration-6 re-verification PASS. Using due_day-anchored loan, paid_date=(due-1day) → was_late=false; paid_date=(due+5days) → was_late=true. Responses 200, schedule entries correctly flip was_late flag."
+      - working: true
+        agent: "testing"
+        comment: "Iteration-8 regression PASS. repay?paid_date=(due+5days) on loan_73b02748a7 month=5 → 200 OK, was_late=True, status='paid'. No regressions from new reschedule/undo-pay endpoints."
+
+  - task: "Reschedule EMI (iteration 8)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "POST /api/loans/{loan_id}/reschedule/{month}?new_due_date=<ISO> reschedules a single unpaid EMI to a new ISO due date. Rejects paid EMIs (400 'Cannot reschedule a paid EMI. Undo first.') and invalid ISO strings (400). Returns full updated Loan object."
+      - working: true
+        agent: "testing"
+        comment: "PASS (3/3 cases) against live backend as lender 9876543210 on loan_73b02748a7. (a) Unpaid EMI (month=2) rescheduled to 2027-01-15T12:00:00Z → 200, full Loan returned, target entry's due_date exactly matches requested ISO. (b) Paid EMI reschedule → 400 with detail 'Cannot reschedule a paid EMI. Undo first.'. (c) Invalid ISO 'not-a-date' → 400 with detail 'Invalid new_due_date (expected ISO 8601).'."
+
+  - task: "Undo-pay EMI (iteration 8)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "POST /api/loans/{loan_id}/undo-pay/{month} rolls back a previously recorded payment: status→upcoming, paid_at=None, was_late=False, paid_amount decremented by EMI amount. Logs a reversal transaction (type='fee', amount=-EMI). Double-undo returns 400 'not marked as paid'."
+      - working: true
+        agent: "testing"
+        comment: "PASS (3/3 cases). On loan_73b02748a7: (a) paid month=2 via /repay, then /undo-pay/2 → 200, paid_amount decremented from 46607.92→23303.92 (exact EMI subtracted), entry status='upcoming', paid_at=None, was_late=False. (b) Second /undo-pay/2 → 400 'This EMI is not marked as paid — nothing to undo.' (c) GET /api/transactions shows reversal entry: type='fee', amount=-23303.92, loan_id=loan_73b02748a7, description='Rollback of repayment #2 for Kaushik sekaran'."
 
   - task: "Create client without verification_id (iteration 6)"
     implemented: true
@@ -267,6 +300,21 @@ agent_communication:
       3) GET /api/dashboard/overdue — returns overdue_loans array with loan_id, borrower_name, overdue_count, overdue_amount, overdue_entries.
       4) POST /api/loans/{loan_id}/repay/{month} with optional override_date — should mark paid with is_delayed computed vs due_date.
       Please use existing test credentials from /app/memory/test_credentials.md. Auth endpoint is POST /api/auth/send-otp then POST /api/auth/verify-otp.
+  - agent: "testing"
+    message: |
+      Iteration-8 backend tests — 7/7 PASS against live preview backend (lender 9876543210, loan_73b02748a7).
+
+      1) POST /api/loans/{id}/reschedule/{month}?new_due_date=ISO
+         [PASS] Unpaid EMI (month=2) → 2027-01-15T12:00:00Z: 200 OK, full Loan returned, target entry's due_date matches requested ISO exactly.
+         [PASS] Paid EMI reschedule: 400 with detail "Cannot reschedule a paid EMI. Undo first."
+         [PASS] Invalid ISO ("not-a-date"): 400 with detail "Invalid new_due_date (expected ISO 8601)."
+      2) POST /api/loans/{id}/undo-pay/{month}
+         [PASS] After /repay/2, /undo-pay/2 → 200: paid_amount decremented from 46607.84→23303.92 (exact EMI 23303.92 subtracted); entry status='upcoming', paid_at=None, was_late=False.
+         [PASS] Second /undo-pay/2 on same (now unpaid) EMI → 400 "This EMI is not marked as paid — nothing to undo."
+         [PASS] GET /api/transactions returns reversal entry: type='fee', amount=-23303.92, loan_id=loan_73b02748a7, description="Rollback of repayment #2 for Kaushik sekaran".
+      3) [PASS] Regression: POST /api/loans/{id}/repay/{month}?paid_date=(due+5d) → 200, was_late=True, status='paid'.
+
+      No backend code modified. Script: /app/backend_test.py.
   - agent: "testing"
     message: |
       Iteration-5 backend tests complete. All 6/6 test cases passed against live preview backend.
