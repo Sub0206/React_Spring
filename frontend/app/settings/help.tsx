@@ -5,6 +5,7 @@ import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
 import { api } from "../../src/api";
+import { useI18n } from "../../src/i18n";
 
 type Msg = { role: "user" | "bot"; text: string; ts: number };
 
@@ -18,6 +19,7 @@ const SUGGESTIONS = [
 
 export default function HelpChatbot() {
   const router = useRouter();
+  const { locale } = useI18n();
   const [msgs, setMsgs] = useState<Msg[]>([
     {
       role: "bot",
@@ -36,7 +38,12 @@ export default function HelpChatbot() {
     setInput("");
     setLoading(true);
     try {
-      const r = await api<{ answer: string }>("/support/chat", { method: "POST", body: { question: q } });
+      // Send last 6 messages for context (3 turns)
+      const history = msgs.slice(-6).map((m) => ({ role: m.role, text: m.text }));
+      const r = await api<{ answer: string; source?: string }>("/support/chat", {
+        method: "POST",
+        body: { question: q, language: locale, history },
+      });
       setMsgs((prev) => [...prev, { role: "bot", text: r.answer || "(no answer)", ts: Date.now() }]);
     } catch (e: any) {
       setMsgs((prev) => [...prev, { role: "bot", text: `I had trouble answering that. ${e?.message || "Please try again."}`, ts: Date.now() }]);
@@ -44,7 +51,7 @@ export default function HelpChatbot() {
       setLoading(false);
       setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
     }
-  }, [input, loading]);
+  }, [input, loading, locale, msgs]);
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>

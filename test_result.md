@@ -548,6 +548,63 @@ backend:
              does NOT match. If the review agent's contract requires the bare
              substring, change "**Clients** tab" → "**Clients tab**" (or remove the
              asterisks) in server.py:2908. Otherwise functionally correct.
+      - working: true
+        agent: "testing"
+        comment: |
+          Iteration-18 HYBRID AI + FAQ SUPPORT CHAT — 6/6 test groups PASS on live preview backend (lender 9876543210, client cli_seed_000). All 17 individual assertions green.
+
+          1. SHORT FAQ PATH (3/3):
+            • POST {"question":"add client"} → 200, source='faq', answer contains 'Clients tab'. (Note: current server text is "**Clients tab**" — literal substring 'Clients tab' now matches.)
+            • POST {"question":"how does EMI rollback work"} (5 words, keyword 'emi') → 200, source='faq', answer contains 'Undo' ("use the **Undo** button on the same row to rollback…").
+            • POST {"question":""} → 200, source='empty', answer starts "Please ask a question — e.g. 'How do I add a client?'".
+
+          2. LLM PATH (5/5):
+            • POST {"question":"Explain the difference between At Risk and Overdue in portfolio health.","language":"en"} (11 words) → 200, source='ai' (NOT faq), answer mentions both 'At Risk' AND 'Overdue'. Preview: "In **Portfolio Health**: 1. **Overdue**: …at least one unpaid EMI past due. 2. **At Risk**: past payments were late…". LendIQ-specific and accurate.
+            • POST {"question":"Why should I upload a bank statement before approving a loan, and what does the app look for?"} (19 words) → 200, source='ai', answer references bounce/risk/statement. Preview: "Uploading a bank statement…: 1. Bounces: …bounced payments. 2. NACH Fails…".
+
+          3. LANGUAGE PATH (2/2):
+            • POST {"question":"पोर्टफोलियो हेल्थ क्या है?","language":"hi"} → 200, source='ai', answer contains Devanagari script. Preview: "**पोर्टफोलियो हेल्थ** आपके लोन पोर्टफोलियो की स्थिति को दर्शाता है…".
+
+          4. BACKWARD COMPAT (1/1):
+            • POST {"question":"How do I check CIBIL?"} (no language / no history) → 200, source='faq', answer len=187. Request without the new optional fields works unchanged.
+
+          5. AUTH (1/1):
+            • POST /api/support/chat without Authorization header → HTTP 401.
+
+          6. REGRESSIONS (3/3):
+            • GET /api/dashboard (Bearer) → 200, portfolio_health={on_track:4, overdue:4, at_risk:6, completed:3, defaulted:1} (all 5 keys, int).
+            • GET /api/audit/summary?months=3&year=2026 (Bearer) → 200, net=-627600, monthly.len=3.
+            • POST /api/clients/cli_seed_000/analyze-statement {} (Bearer) → 200 (bounce_risk='medium', parse_source='mock').
+
+          Routing rules verified end-to-end: short ≤8-word keyword hits → faq; long / keyword-miss → ai via Emergent GPT-4o-mini (LiteLLM calls visible in backend logs); empty → empty. No LLM failures observed so the 'fallback' branch was not exercised — endpoint is resilient in the happy path.
+
+          No backend code modified. Test script: /app/backend_test.py.
+
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Iteration 18 — upgraded /api/support/chat to be a HYBRID AI + keyword-FAQ bot.
+          Behaviour:
+            • Short (<=8 word) questions that hit a known keyword rule (add client, new loan, EMI,
+              statement, CIBIL, language, subscription, audit, overdue, logout, pdf) → instant FAQ
+              response with canned step-by-step answer. Response JSON now includes `source: "faq"`.
+            • Longer / open-ended questions OR anything not in the keyword map → Emergent LLM
+              (openai/gpt-4o-mini) with a strong LendIQ system prompt that describes every feature
+              (tabs, flows, EMI rules, portfolio health logic, languages, PDFs, subscription).
+              Response JSON includes `source: "ai"`.
+            • LLM failure → deterministic fallback with `source: "fallback"`.
+          New request fields (both optional):
+            • `language` — "en"/"hi"/"ta"/"te"/"kn"/"ml" so the bot replies in the user's language.
+            • `history` — list of recent {role, text} messages for multi-turn context.
+          Manual smoke-test PASS:
+            • "add client" (short) → source=faq with full step list.
+            • "Explain the difference between At Risk and Overdue in portfolio health." (long)
+              → source=ai with a correct LendIQ-specific comparison.
+            • Hindi question about Portfolio Health → source=ai, answer returned in Hindi.
+          Please verify:
+            1. Existing iteration-16 regressions (empty Q → generic; "clients tab" substring; auth 401) still pass.
+            2. Long-form questions return `source: "ai"` and relevant LendIQ text (not a hallucinated feature).
+            3. Backward compat — requests without `language`/`history` still work.
 
 metadata:
   created_by: "main_agent"
@@ -555,7 +612,8 @@ metadata:
   test_sequence: 9
 
 test_plan:
-  current_focus: []
+  current_focus:
+    - "Support chat endpoint (iteration 16)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -914,4 +972,30 @@ agent_communication:
             – Android 11+: Storage Access Framework fallback asks for a folder the FIRST time then writes directly there.
             – iOS / else: opens PDF inline via `WebBrowser.openBrowserAsync` (no share/app-chooser sheet) — user saves from the native browser control.
           All filenames follow `document_analysis_report_<client>.pdf`, `cibil_analysis_report_<client>.pdf`, `audit_report_<range>_<year>.pdf`.
+
+
+  - agent: "testing"
+    message: |
+      Iteration-18 validation complete — Hybrid AI + keyword-FAQ support chat bot — 6/6 test groups PASS (17/17 individual assertions) on live preview backend (lender 9876543210).
+
+      ROUTING VERIFIED:
+        • Short keyword match (≤8 words) → source="faq" with canned step-by-step answer.
+            - "add client" → answer contains 'Clients tab'.
+            - "how does EMI rollback work" (5 words, keyword 'emi') → answer contains 'Undo'.
+        • Long / nuanced question → source="ai" via Emergent LLM (openai/gpt-4o-mini).
+            - "Explain the difference between At Risk and Overdue in portfolio health." → ai answer correctly contrasts both states.
+            - "Why should I upload a bank statement before approving a loan…" → ai answer cites bounces / NACH fails.
+        • Empty question → source="empty", answer starts "Please ask".
+        • Hindi question with language="hi" → source="ai", answer in Devanagari.
+        • No Authorization header → 401.
+        • Backward compat — request without language/history → 200 unchanged.
+
+      REGRESSIONS PASS:
+        • /api/dashboard — portfolio_health present (all 5 int keys).
+        • /api/audit/summary?months=3&year=2026 — net=-627600, monthly.len=3.
+        • POST /api/clients/cli_seed_000/analyze-statement {} — 200.
+
+      LLM calls visible in backend logs (LiteLLM → openai/gpt-4o-mini). No LLM failures occurred so the 'fallback' branch was not exercised in this run — endpoint is healthy on the happy path.
+
+      Task flipped: needs_retesting=false, working=true. No backend code modified. Script: /app/backend_test.py.
 

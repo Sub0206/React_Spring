@@ -3154,36 +3154,116 @@ async def audit_summary_pdf(months: int = 6, year: int = 0, current: UserPublic 
 
 class ChatRequest(BaseModel):
     question: str
+    language: Optional[str] = None  # "en","hi","ta","te","kn","ml"
+    history: Optional[List[Dict[str, str]]] = None  # [{role:"user"|"bot", text:"..."}]
+
+
+# --- Fast keyword FAQ (instant replies, no LLM latency) ---
+_SUPPORT_KB: List[Tuple[List[str], str]] = [
+    (["add", "client"], "To add a new client:\n1. Go to the **Clients tab** at the bottom.\n2. Tap the **+ Add** button on the top right.\n3. Fill in name, mobile number, Aadhaar (12 digits) and PAN (10 chars).\n4. Add the permanent address block.\n5. Tap **Save client** — we auto-verify Aadhaar & PAN and add them to your clients list."),
+    (["new", "loan"], "To issue a new loan:\n1. Open the client from **Clients**.\n2. Tap **New loan**.\n3. Review the client snapshot → Continue.\n4. Upload a bank statement (PDF) → we analyze + score it.\n5. Pull a CIBIL check (optional) → enter amount, tenure, rate, due date.\n6. Review summary → tap **Fund** to disburse."),
+    (["emi", "mark paid", "pay"], "Month-wise EMI rules:\n• You can **Mark Paid** / **Reschedule** only for the CURRENT month.\n• Past + future months are locked to protect the record.\n• If you made a mistake, use the **Undo** button on the same row to rollback the payment and reopen it."),
+    (["bank", "statement", "analyze", "analysis"], "Bank-statement analysis:\n1. Open **New loan → Upload statement**.\n2. Pick 3 / 6 / 12 months.\n3. Select the PDF — we parse it, detect bounces/NACH fails, and score the risk.\n4. Download a branded PDF report from the analysis screen."),
+    (["cibil"], "CIBIL check:\n1. During the new loan flow, after statement analysis tap **Pull CIBIL**.\n2. We fetch the score + key factors.\n3. Tap **Download Report (PDF)** to save the full CIBIL report."),
+    (["language", "भाषा", "மொழி"], "Change language:\n1. Profile tab → **Language**.\n2. Pick from English, Hindi, Tamil, Telugu, Kannada, Malayalam.\n3. The entire app switches instantly."),
+    (["subscription", "plan", "upgrade"], "Subscription / upgrade:\n1. Profile tab → **Subscription**.\n2. Toggle Monthly / Yearly.\n3. Pick Starter / Smart Credit / Prime Elite.\n4. Tap **Upgrade** — payment gateway coming soon."),
+    (["audit", "report", "inflow", "outflow"], "Audit & reports:\n1. Profile tab → **Audit & Reports**.\n2. Pick 3M / 6M / 12M / YTD and the year.\n3. See month-wise inflow / outflow / net.\n4. Tap **Download audit report (PDF)** for a branded report."),
+    (["overdue", "late"], "Overdue loans:\n• Dashboard → **Portfolio health → Overdue** opens the filtered list.\n• Red highlighted loans have unpaid EMIs past due.\n• Open any loan → tap **Mark paid (current month)** to collect."),
+    (["logout", "sign out"], "Sign out from Profile tab → **Logout** at the bottom."),
+    (["pdf", "download"], "All PDFs (Document Analysis, CIBIL, Audit) download directly to your device. On Android the first download asks you to pick a folder (saved for next time); on iOS the PDF opens inline where you can save to Files."),
+]
+
+_SUPPORT_SYSTEM = """You are **LendIQ Guide**, a friendly in-app assistant for the LendIQ smart-lending mobile app (powered by SKYNOTECH).
+
+You help LENDERS (not borrowers) operate the app. Keep answers short, practical and step-by-step (use numbered lists). Always refer to in-app screens by their exact labels. Use markdown bold (**label**) for UI elements. Never fabricate features that don't exist.
+
+LendIQ feature map you MUST use:
+• **Dashboard tab** — TOTAL FUNDED hero, Portfolio Health tiles (On Track / Overdue / At Risk / Completed — each is tappable), Inflow/Outflow chart, Recent Transactions.
+• **Requests tab** — pending loan applications list.
+• **Loans tab** — active loans with filter pills (All / On Track / Overdue / At Risk / Completed).
+• **Clients tab** — add, search, and open clients (KYC: Aadhaar 12-digit + PAN 10-char auto-verified).
+• **Profile tab** — Subscription, Language, Audit & Reports, Help & Support, Logout.
+
+Key flows:
+1. Add client: Clients tab → + Add → name, mobile, Aadhaar, PAN, address → Save.
+2. New loan: Clients → open client → New loan → review → upload bank statement PDF (3/6/12 mo) → AI analysis → pull CIBIL → enter amount/tenure/rate/due day → Summary → Fund.
+3. Bank statement analysis: deterministic pdfplumber engine detects bounces, NACH fails, inflow/outflow; returns risk level + reasons.
+4. CIBIL: one-tap check, downloadable PDF with score/band/factors.
+5. EMI: Month-wise EMI only — only CURRENT month can be marked paid or rescheduled; past/future are locked. Every payment has an Undo button to rollback.
+6. Approve / Reject: each decision is stamped with Lender name, date, reason — visible on the loan application detail.
+7. Repayment schedule: anchored to due_day you choose at approval (1-28); overdue EMIs are flagged red with days-late.
+8. Audit & Reports: Profile → Audit & Reports. Pick 3M/6M/12M/YTD + year. Month-wise inflow, outflow, net + reconciliation + variance detection. Download branded PDF.
+9. Subscription: Profile → Subscription. Starter ₹499/mo, Smart Credit ₹1499/mo (Popular), Prime Elite ₹3999/mo. Monthly/Yearly toggle. Payment gateway coming soon.
+10. Languages: Profile → Language. English, Hindi, Tamil, Telugu, Kannada, Malayalam. Switches instantly.
+11. PDF downloads: All PDFs (Analysis, CIBIL, Audit) download directly to device. Android uses Storage Access Framework (pick folder once). iOS opens inline in browser to save.
+12. Portfolio Health logic: On Track = all EMIs unpaid-but-not-past-due. Overdue = has unpaid past-due EMI. At Risk = past payments were late but currently not overdue. Completed = loan fully paid. Defaulted = marked defaulted.
+
+Tone: concise, professional, warm. If the user asks something unrelated to LendIQ, politely steer them back. Never claim to execute actions — only explain how the user can do it.
+
+If the user asks in Hindi / Tamil / Telugu / Kannada / Malayalam, REPLY in that same language. If a `language` hint is provided, prefer that language.
+
+Keep every answer under 120 words unless the user explicitly asks for more detail.
+"""
+
+_LANG_NAME = {
+    "en": "English", "hi": "Hindi", "ta": "Tamil",
+    "te": "Telugu", "kn": "Kannada", "ml": "Malayalam",
+}
 
 
 @api.post("/support/chat")
 async def support_chat(body: ChatRequest, current: UserPublic = Depends(get_current_user)):
-    """Deterministic, fast guide bot. Uses a simple keyword-map to produce step-by-step
-    answers on the most common how-tos; falls back to a generic tip."""
-    q = (body.question or "").strip().lower()
+    """Hybrid guide bot: keyword-match FAQ (instant) → Emergent LLM (GPT-4o-mini) for
+    everything else → deterministic fallback if LLM fails. Replies in the user's language."""
+    q = (body.question or "").strip()
     if not q:
-        return {"answer": "Please ask a question — e.g. 'How do I add a client?'"}
+        return {"answer": "Please ask a question — e.g. 'How do I add a client?'", "source": "empty"}
 
-    kb: List[Tuple[List[str], str]] = [
-        (["add", "client"], "To add a new client:\n1. Go to the **Clients tab** at the bottom.\n2. Tap the **+ Add** button on the top right.\n3. Fill in name, mobile number, Aadhaar (12 digits) and PAN (10 chars).\n4. Add the permanent address block.\n5. Tap **Save client** — we auto-verify Aadhaar & PAN and add them to your clients list."),
-        (["new", "loan"], "To issue a new loan:\n1. Open the client from **Clients**.\n2. Tap **New loan**.\n3. Review the client snapshot → Continue.\n4. Upload a bank statement (PDF) → we analyze + score it.\n5. Pull a CIBIL check (optional) → enter amount, tenure, rate, due date.\n6. Review summary → tap **Fund** to disburse."),
-        (["emi", "mark paid", "pay"], "Month-wise EMI rules:\n• You can **Mark Paid** / **Reschedule** only for the CURRENT month.\n• Past + future months are locked to protect the record.\n• If you made a mistake, use the **Undo** button on the same row to rollback the payment and reopen it."),
-        (["bank", "statement", "analyze", "analysis"], "Bank-statement analysis:\n1. Open **New loan → Upload statement**.\n2. Pick 3 / 6 / 12 months.\n3. Select the PDF — we parse it, detect bounces/NACH fails, and score the risk.\n4. Download a branded PDF report from the analysis screen."),
-        (["cibil"], "CIBIL check:\n1. During the new loan flow, after statement analysis tap **Pull CIBIL**.\n2. We fetch the score + key factors.\n3. Tap **Download Report (PDF)** to save the full CIBIL report."),
-        (["language", "भाषा", "மொழி"], "Change language:\n1. Profile tab → **Language**.\n2. Pick from English, Hindi, Tamil, Telugu, Kannada, Malayalam.\n3. The entire app switches instantly."),
-        (["subscription", "plan", "upgrade"], "Subscription / upgrade:\n1. Profile tab → **Subscription**.\n2. Toggle Monthly / Yearly.\n3. Pick Starter / Smart Credit / Prime Elite.\n4. Tap **Upgrade** — payment gateway coming soon."),
-        (["audit", "report", "inflow", "outflow"], "Audit & reports:\n1. Profile tab → **Audit & Reports**.\n2. Pick 3M / 6M / 12M / YTD and the year.\n3. See month-wise inflow / outflow / net.\n4. Tap **Download audit report (PDF)** for a branded report."),
-        (["overdue", "late"], "Overdue loans:\n• Dashboard → **Portfolio health → Overdue** opens the filtered list.\n• Red highlighted loans have unpaid EMIs past due.\n• Open any loan → tap **Mark paid (current month)** to collect."),
-        (["logout", "sign out"], "Sign out from Profile tab → **Logout** at the bottom."),
-        (["pdf", "download"], "All PDFs (Document Analysis, CIBIL, Audit) download from their respective screens. On mobile we open the system share sheet so you can save to Files or forward."),
-    ]
-    for keys, answer in kb:
-        if all(k in q for k in keys[:1]):
-            matched = sum(1 for k in keys if k in q)
-            if matched >= 1:
-                return {"answer": answer}
+    q_lower = q.lower()
 
-    # Fallback: friendly generic tip + top-3 suggestions
+    # 1) Fast keyword path — only for short, focused how-tos. Long questions (likely
+    # comparative / nuanced) go straight to the LLM for a better answer.
+    word_count = len(q.split())
+    if word_count <= 8:
+        for keys, answer in _SUPPORT_KB:
+            if all(k in q_lower for k in keys[:1]):
+                matched = sum(1 for k in keys if k in q_lower)
+                if matched >= 1:
+                    return {"answer": answer, "source": "faq"}
+
+    # 2) LLM path
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+
+        lang = (body.language or "en").lower()
+        lang_name = _LANG_NAME.get(lang, "English")
+        sys_prompt = _SUPPORT_SYSTEM + f"\nUser's preferred language: **{lang_name}**."
+
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"help-{current.user_id}",
+            system_message=sys_prompt,
+        ).with_model("openai", "gpt-4o-mini")
+
+        # include recent history for context
+        convo = ""
+        if body.history:
+            for m in body.history[-6:]:  # last 3 turns
+                role = "User" if m.get("role") == "user" else "Assistant"
+                txt = (m.get("text") or "").strip()
+                if txt:
+                    convo += f"{role}: {txt}\n"
+        convo += f"User: {q}\nAssistant:"
+
+        resp = await chat.send_message(UserMessage(text=convo))
+        answer = (resp or "").strip()
+        if not answer:
+            raise ValueError("empty LLM response")
+        return {"answer": answer, "source": "ai"}
+    except Exception as e:
+        logger.warning(f"support_chat LLM failed, using fallback: {e}")
+
+    # 3) Deterministic fallback
     return {"answer": (
         "I don't have a specific step list for that yet, but here's where to look:\n"
         "• **Clients tab** → add / view clients\n"
@@ -3191,7 +3271,7 @@ async def support_chat(body: ChatRequest, current: UserPublic = Depends(get_curr
         "• **Profile → Audit** → inflow/outflow reports\n"
         "• **Profile → Language** → switch language\n"
         "Ask me things like 'How to add a client', 'How to analyze a statement', or 'How does EMI rollback work?'"
-    )}
+    ), "source": "fallback"}
 
 
 
