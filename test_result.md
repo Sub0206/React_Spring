@@ -690,3 +690,20 @@ agent_communication:
         • Login page: removed "Continue with Google" button and "or" divider — clean mobile+OTP only login.
         • Packages added: expo-file-system, expo-sharing.
 
+  - agent: "main"
+    message: |
+      Iteration 14 complete. CRITICAL analysis-engine + PDF overhaul.
+      Backend (40/40 tests PASS):
+        • Rewrote statement analyzer — now DETERMINISTIC: same (client_id, file_name) → same 12-month universe. 3-month response is a strict last-3 slice of the 6-month / 12-month universe. LLM removed from the core path to guarantee stability.
+        • Real PDF parsing — accepts `file_base64` in POST /api/loan-apps/analyze-statement. Uses pdfplumber to extract text, scans for BOUNCE_KEYWORDS (CHQ RETN, CHEQUE RETURN, ECS RETURN, NACH FAIL, INSUFFICIENT FUNDS, EMI RETURN, BOUNCED, DISHONOUR, etc). Parsed bounce count OVERRIDES the deterministic mock.
+        • Transparent rule engine exposes `risk_reasons[]`, `parse_confidence`, `parse_source`, `rows_extracted`, `bounce_matches_found`, `months_covered_in_file`, `manual_review_recommended`, `bounce_evidence[]` (sample matching lines).
+        • Added `?token=<jwt>` query-param auth fallback on BOTH PDF endpoints (analysis + CIBIL) via new `get_current_user_flexible` dependency — lets native share/browser open PDFs without headers.
+        • Branded PDF now renders "Why this risk score?" block with rule reasons, a full Parsing-confidence table, and a manual-review warning banner when confidence is low. Bounce-evidence sample lines printed at the bottom of the red-flags page.
+      Frontend:
+        • `/app/frontend/src/pdf.ts` rewritten with triple fallback: native cache download + share sheet → WebBrowser(token URL) → Linking.openURL; web: fetch blob → window.open(token URL). Works on iOS/Android/Desktop/Mobile.
+        • Loan-new upload step reads file as base64 (`expo-file-system/legacy.readAsStringAsync`) and ships it to the backend — unlocks real bounce detection on actual PDFs.
+        • Analysis screen now shows:
+            - "Why this risk score?" card with each reason (severity-coloured)
+            - "Parsing confidence" card with Accuracy pill, rows extracted, bounce matches, source, missing-pages flag, and a "Manual review recommended" banner when confidence is LOW.
+        • Month-based validation now keyed off `months_covered_in_file` (not just `months_analyzed`), so only truly parsed short statements are rejected.
+
