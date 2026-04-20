@@ -638,3 +638,16 @@ agent_communication:
         • Dashboard: removed the standalone "Overdue Payment (Current Month)" card (was already absent, cleaned up dead styles).
         • Loans tab: confirmed no big red "14 overdue payments" banner; only clean filter pills (All / On Track / Overdue / At Risk / Completed). Dead styles and unused Pressable import removed.
         • Portfolio Health tiles on Dashboard remain fully clickable — verified via screenshots: On Track/Overdue/At Risk/Completed each navigate to /loans?filter=<status> with the correct pill activated.
+  - agent: "main"
+    message: |
+      Iteration 13 complete.
+      Backend: Added NEW endpoint GET /api/clients/{client_id}/cibil-report.pdf (branded reportlab PDF — header strip, snapshot table, score hero colour-coded by band, metrics, summary, key factors; falls back to deterministic mock if no saved report). Backend tests PASS 9/9, regressions green.
+      Frontend:
+        • Shared PDF download helper at /app/frontend/src/pdf.ts — native downloads via expo-file-system + expo-sharing, web via Blob download. Works on mobile AND desktop, real PDF preview/save.
+        • loan-new "Download Analysis Report (PDF)" now streams the real PDF to the device using the new helper and shows it in the native share sheet (no more "Opening in browser…" alert).
+        • Removed "Download as text (.txt)" buttons from both loan-new statement view and cibil-report page.
+        • loan-new PDF button renamed to "Download Report (PDF)".
+        • cibil-report page now has "Download Report (PDF)" button wired to /api/clients/{id}/cibil-report.pdf.
+        • Login page: removed "Continue with Google" button and "or" divider — clean mobile+OTP only login.
+        • Packages added: expo-file-system, expo-sharing.
+

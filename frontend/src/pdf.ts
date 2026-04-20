@@ -1,5 +1,7 @@
 import { Platform, Alert } from "react-native";
-import * as FileSystem from "expo-file-system";
+// Use the legacy API explicitly — the new File/Directory API from expo-file-system@19 is
+// still in flux and the legacy `downloadAsync` remains fully supported.
+import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import * as WebBrowser from "expo-web-browser";
 import AsyncStorage from "@react-native-async-storage/async-storage";
