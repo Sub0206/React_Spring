@@ -313,3 +313,16 @@ agent_communication:
 
 
       Tests 2–4 were run against pre-existing client cli_cd90671802ac (Ravi Kumar) because the client_create 500 bug prevented creating a fresh one. Test script: /app/backend_test.py. No backend code was modified.
+  - agent: "testing"
+    message: |
+      Iteration-7 backend regression (frontend-only iteration) — 9/9 PASS against live preview backend.
+
+      1) POST /api/auth/send-otp (login, 9876543210) → 200, demo_otp returned.
+         POST /api/auth/verify-otp → 200, access_token returned.
+      2) GET /api/applications?status= → all 200 with arrays:
+           pending=11, approved=2, funded=15, rejected=3. Each item's `status` matches the requested filter.
+      3) GET /api/loans → 200, 15 loans; every loan's repayment_schedule entry contains month, due_date, amount, status, was_late.
+      4) GET /api/dashboard → 200, includes overdue_count=0, overdue_amount=0.0, inflow_chart (6 pts {label,value}), outflow_chart (6 pts {label,value}).
+      5) GET /api/dashboard/overdue → 200, {overdue_loans: []} (list, empty for this user — expected given no past-due EMIs).
+
+      No regressions detected. No backend code was modified. Test script: /app/backend_test.py.
