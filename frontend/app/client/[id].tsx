@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Alert, ActivityIndicator, RefreshControl } from "react-native";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator, RefreshControl } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "../../src/api";
-import { Card, PrimaryButton, Badge } from "../../src/ui";
+import { Card, PrimaryButton, Badge, InitialsAvatar } from "../../src/ui";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
 
 type Client = {
@@ -97,7 +97,9 @@ export default function ClientDetail() {
         contentContainerStyle={{ paddingBottom: 120 }}
       >
         <View style={styles.heroBlock}>
-          <Image source={{ uri: client.avatar || "https://via.placeholder.com/120" }} style={styles.avatar} />
+          <View style={styles.heroAvatarWrap}>
+            <InitialsAvatar name={client.name} size={96} color="#ffffff" />
+          </View>
           <Text style={styles.name}>{client.name}</Text>
           <Text style={styles.mobile}>+91 {client.mobile}</Text>
           <View style={styles.vbadges}>
@@ -238,7 +240,7 @@ const styles = StyleSheet.create({
   backBtn: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center" },
   topTitle: { flex: 1, textAlign: "center", fontSize: 18, fontWeight: "800", color: "#fff" },
   heroBlock: { alignItems: "center", padding: Spacing.lg, backgroundColor: Colors.primary, paddingBottom: Spacing.xl },
-  avatar: { width: 100, height: 100, borderRadius: 50, backgroundColor: "#fff", borderWidth: 4, borderColor: "#fff" },
+  heroAvatarWrap: { padding: 4, borderRadius: 60, backgroundColor: "#ffffff20" },
   name: { fontSize: 24, fontWeight: "800", color: "#fff", marginTop: Spacing.md },
   mobile: { color: "#D9E7FF", marginTop: 4, fontSize: 14 },
   vbadges: { flexDirection: "row", gap: 6, marginTop: Spacing.sm, flexWrap: "wrap", justifyContent: "center" },

@@ -1,14 +1,14 @@
 import React, { useEffect, useState, useCallback } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert,
-  ActivityIndicator, Image, Platform, Modal,
+  ActivityIndicator, Platform, Modal,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
-import { Input, PrimaryButton, Card, Badge } from "../../src/ui";
-import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
+import { Input, PrimaryButton, Card, Badge, InitialsAvatar } from "../../src/ui";
+import { Colors, Radii, Shadows, Spacing, Brand } from "../../src/theme";
 import { api } from "../../src/api";
 
 type Client = {
@@ -90,10 +90,24 @@ export default function NewLoan() {
         method: "POST", body: { client_id: clientId },
       });
       setCibil(res);
+      // Pre-set summary step so that when user presses back from the report page,
+      // they land on the summary view with CIBIL populated.
       setStep("summary");
+      router.push({
+        pathname: "/cibil-report/[clientId]",
+        params: { clientId: String(clientId), data: JSON.stringify(res) },
+      });
     } catch (e: any) {
       Alert.alert("CIBIL failed", e.message);
     } finally { setLoadingCibil(false); }
+  };
+
+  const openCibilReport = () => {
+    if (!cibil) return;
+    router.push({
+      pathname: "/cibil-report/[clientId]",
+      params: { clientId: String(clientId), data: JSON.stringify(cibil) },
+    });
   };
 
   const createLoan = () => {
@@ -139,7 +153,7 @@ export default function NewLoan() {
     const header = kind === "statement" ? "BANK STATEMENT ANALYSIS" : "CIBIL CREDIT REPORT";
     const lines: string[] = [
       `============================================`,
-      `  LENDIFY · ${header}`,
+      `  ${Brand.name} · ${header}`,
       `============================================`,
       `Client: ${client?.name}`,
       `PAN: ${client?.pan}  |  Mobile: +91 ${client?.mobile}`,
@@ -181,7 +195,7 @@ export default function NewLoan() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `lendify-${kind}-${client?.name || "report"}.txt`.replace(/\s+/g, "_");
+      a.download = `lendiq-${kind}-${client?.name || "report"}.txt`.replace(/\s+/g, "_");
       a.click();
       URL.revokeObjectURL(url);
     } else {
@@ -229,7 +243,7 @@ export default function NewLoan() {
 
             <Card style={{ marginTop: Spacing.md }}>
               <View style={styles.clientRow}>
-                <Image source={{ uri: client.avatar || "https://via.placeholder.com/60" }} style={styles.avatar} />
+                <InitialsAvatar name={client.name} size={48} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.clientName}>{client.name}</Text>
                   <Text style={styles.clientSub}>+91 {client.mobile}</Text>
@@ -368,7 +382,7 @@ export default function NewLoan() {
 
             <Card style={{ marginTop: Spacing.md }}>
               <View style={styles.clientRow}>
-                <Image source={{ uri: client.avatar || "https://via.placeholder.com/60" }} style={styles.avatar} />
+                <InitialsAvatar name={client.name} size={48} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.clientName}>{client.name}</Text>
                   <Text style={styles.clientSub}>+91 {client.mobile} · {client.pan}</Text>
@@ -391,17 +405,20 @@ export default function NewLoan() {
             )}
 
             {cibil && (
-              <View style={[styles.riskCard, { backgroundColor: bandHex(cibil.band_color) + "12", borderColor: bandHex(cibil.band_color) }]}>
+              <TouchableOpacity
+                testID="open-cibil-report"
+                onPress={openCibilReport}
+                activeOpacity={0.9}
+                style={[styles.riskCard, { backgroundColor: bandHex(cibil.band_color) + "12", borderColor: bandHex(cibil.band_color) }]}
+              >
                 <View style={[styles.riskDot, { backgroundColor: bandHex(cibil.band_color) }]} />
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.riskLabel}>CIBIL SCORE</Text>
+                  <Text style={styles.riskLabel}>CIBIL SCORE · TAP TO VIEW REPORT</Text>
                   <Text style={[styles.riskValue, { color: bandHex(cibil.band_color) }]}>{cibil.score} · {String(cibil.band).toUpperCase()}</Text>
                   <Text style={styles.riskSub}>On-time {cibil.on_time_payments_pct}% · Utilization {cibil.credit_utilization_pct}%</Text>
                 </View>
-                <TouchableOpacity onPress={() => downloadReport("cibil")} style={styles.iconPill}>
-                  <Ionicons name="download" size={16} color={Colors.primary} />
-                </TouchableOpacity>
-              </View>
+                <Ionicons name="chevron-forward" size={20} color={bandHex(cibil.band_color)} />
+              </TouchableOpacity>
             )}
 
             <Card style={{ marginTop: Spacing.md }}>

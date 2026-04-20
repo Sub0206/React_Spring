@@ -14,7 +14,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { Input, PrimaryButton } from "../src/ui";
-import { Colors, Radii, Shadows, Spacing } from "../src/theme";
+import { Colors, Radii, Shadows, Spacing, Brand } from "../src/theme";
 import { useAuth } from "../src/auth";
 
 export default function AuthScreen() {
@@ -91,12 +91,10 @@ export default function AuthScreen() {
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
           <View style={styles.hero}>
             <View style={styles.logoWrap}>
-              <Image
-                source={{ uri: "https://static.prod-images.emergentagent.com/jobs/b97ea820-9246-4c66-95e8-0a7c3405dd9e/images/0374309247118c7aa2b0d747fd7062f80805f3c719877fcf47e47dbe4fac2348.png" }}
-                style={{ width: 80, height: 80 }}
-              />
+              <Text style={styles.logoText}>LQ</Text>
             </View>
-            <Text style={styles.title}>Lendify</Text>
+            <Text style={styles.title}>{Brand.name}</Text>
+            <Text style={styles.powered}>{Brand.tagline}</Text>
             <Text style={styles.subtitle}>
               Smart lending, powered by AI.{"\n"}Review, score & fund loans in seconds.
             </Text>
@@ -215,7 +213,7 @@ export default function AuthScreen() {
           </View>
 
           <Text style={styles.footer}>
-            By continuing, you agree to Lendify&apos;s Terms & Privacy Policy.
+            By continuing, you agree to LendIQ&apos;s Terms & Privacy Policy.
           </Text>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -228,10 +226,13 @@ const styles = StyleSheet.create({
   scroll: { padding: Spacing.lg, paddingBottom: Spacing.xxl },
   hero: { alignItems: "center", marginTop: Spacing.lg, marginBottom: Spacing.lg },
   logoWrap: {
-    width: 100, height: 100, borderRadius: 30, backgroundColor: Colors.surface,
-    alignItems: "center", justifyContent: "center", marginBottom: Spacing.md, ...Shadows.card,
+    width: 90, height: 90, borderRadius: 24,
+    backgroundColor: Colors.primary,
+    alignItems: "center", justifyContent: "center", marginBottom: Spacing.md, ...Shadows.button,
   },
-  title: { fontSize: 34, fontWeight: "800", color: Colors.textPrimary, letterSpacing: -0.5 },
+  logoText: { color: "#fff", fontSize: 34, fontWeight: "800", letterSpacing: -1 },
+  title: { fontSize: 38, fontWeight: "800", color: Colors.textPrimary, letterSpacing: -1 },
+  powered: { fontSize: 11, color: Colors.textMuted, fontWeight: "700", letterSpacing: 1.5, marginTop: 2 },
   subtitle: { fontSize: 15, color: Colors.textSecondary, textAlign: "center", marginTop: 6, lineHeight: 22 },
   card: { backgroundColor: Colors.surface, borderRadius: Radii.xl, padding: Spacing.lg, marginTop: Spacing.md, ...Shadows.card },
   tabs: { flexDirection: "row", backgroundColor: Colors.bgAlt, borderRadius: Radii.pill, padding: 4, marginBottom: Spacing.lg },

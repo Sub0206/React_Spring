@@ -27,16 +27,12 @@ export default function AddClient() {
   const [stateName, setStateName] = useState("");
   const [pincode, setPincode] = useState("");
 
-  // Aadhaar (new flow: number -> OTP -> verified)
+  // Aadhaar (simplified: just validate, no OTP)
   const [aadhaar, setAadhaar] = useState("");
-  const [aadhaarStage, setAadhaarStage] = useState<"input" | "otp" | "verified">("input");
-  const [aadhaarVid, setAadhaarVid] = useState<string | null>(null);
-  const [aadhaarDemoOtp, setAadhaarDemoOtp] = useState<string | null>(null);
-  const [aadhaarOtp, setAadhaarOtp] = useState("");
-  const [aadhaarMasked, setAadhaarMasked] = useState("");
+  const [aadhaarStatus, setAadhaarStatus] = useState<"idle" | "checking" | "ok" | "err">("idle");
   const [aadhaarName, setAadhaarName] = useState("");
+  const [aadhaarMasked, setAadhaarMasked] = useState("");
   const [aadhaarErr, setAadhaarErr] = useState("");
-  const [loadingA, setLoadingA] = useState(false);
 
   // PAN (name returned, no OTP)
   const [pan, setPan] = useState("");
@@ -57,41 +53,24 @@ export default function AddClient() {
 
   const canProceedBasic = name.trim().length >= 2 && mobile.length === 10;
 
-  const sendAadhaarOtp = async () => {
+  const verifyAadhaar = async () => {
     if (aadhaar.length !== 12) {
-      setAadhaarErr("Aadhaar must be 12 digits.");
-      return;
+      setAadhaarStatus("err"); setAadhaarErr("Aadhaar must be 12 digits."); return;
     }
-    setLoadingA(true); setAadhaarErr("");
+    setAadhaarStatus("checking"); setAadhaarErr("");
     try {
-      const res = await api<{ verification_id: string; demo_otp: string; masked: string }>("/clients/aadhaar-send-otp", {
-        method: "POST", body: { aadhaar },
+      const res = await api<{ valid: boolean; reason?: string; masked?: string; name?: string }>("/clients/verify-aadhaar", {
+        method: "POST", auth: false, body: { aadhaar },
       });
-      setAadhaarVid(res.verification_id);
-      setAadhaarDemoOtp(res.demo_otp);
-      setAadhaarMasked(res.masked);
-      setAadhaarStage("otp");
+      if (!res.valid) {
+        setAadhaarStatus("err"); setAadhaarErr(res.reason || "Invalid Aadhaar"); return;
+      }
+      setAadhaarStatus("ok");
+      setAadhaarName(res.name || "");
+      setAadhaarMasked(res.masked || "");
     } catch (e: any) {
-      setAadhaarErr(e.message || "Failed to send Aadhaar OTP.");
-    } finally { setLoadingA(false); }
-  };
-
-  const verifyAadhaarOtp = async () => {
-    if (!aadhaarVid || aadhaarOtp.length < 4) {
-      Alert.alert("Enter OTP", "Please enter the Aadhaar OTP.");
-      return;
+      setAadhaarStatus("err"); setAadhaarErr(e.message || "Failed");
     }
-    setLoadingA(true); setAadhaarErr("");
-    try {
-      const res = await api<{ verified: boolean; name: string; masked: string }>("/clients/aadhaar-verify-otp", {
-        method: "POST", body: { verification_id: aadhaarVid, otp: aadhaarOtp },
-      });
-      setAadhaarName(res.name);
-      setAadhaarMasked(res.masked);
-      setAadhaarStage("verified");
-    } catch (e: any) {
-      setAadhaarErr(e.message || "Verification failed.");
-    } finally { setLoadingA(false); }
   };
 
   const verifyPan = async () => {
@@ -140,7 +119,6 @@ export default function AddClient() {
         body: {
           name: name.trim(), mobile, aadhaar, pan,
           verification_id: vid,
-          aadhaar_verification_id: aadhaarVid,
           aadhaar_name: aadhaarName,
           pan_name: panName,
           pan_dob: panDob,
@@ -235,65 +213,38 @@ export default function AddClient() {
 
           {step === "aadhaar" && (
             <View style={styles.card}>
-              <EmojiHero emoji="🪪" title="Verify Aadhaar" sub="We'll send an OTP to the registered mobile." tint={Colors.info} />
+              <EmojiHero emoji="🪪" title="Verify Aadhaar" sub="Enter Aadhaar number — we'll fetch registered name." tint={Colors.info} />
 
-              {aadhaarStage === "input" && (
-                <>
-                  <Label text="Aadhaar number" />
-                  <Input
-                    testID="input-aadhaar" placeholder="XXXX XXXX XXXX" keyboardType="number-pad"
-                    value={aadhaar} onChangeText={(v) => { setAadhaar(sanitizeDigits(v, 12)); setAadhaarErr(""); }}
-                    maxLength={12}
-                  />
-                  {!!aadhaarErr && <StatusLine ok={false} msg={aadhaarErr} />}
-                  <View style={{ height: Spacing.md }} />
-                  <PrimaryButton testID="send-aadhaar-otp" title="Send Aadhaar OTP" loading={loadingA} disabled={aadhaar.length !== 12} onPress={sendAadhaarOtp} />
-                </>
+              <Label text="Aadhaar number" />
+              <Input
+                testID="input-aadhaar" placeholder="XXXX XXXX XXXX" keyboardType="number-pad"
+                value={aadhaar} onChangeText={(v) => { setAadhaar(sanitizeDigits(v, 12)); setAadhaarStatus("idle"); setAadhaarErr(""); }}
+                maxLength={12}
+              />
+              {aadhaarStatus === "err" && <StatusLine ok={false} msg={aadhaarErr} />}
+
+              {aadhaarStatus === "ok" && (
+                <View style={styles.verifiedBox}>
+                  <View style={styles.verifiedTick}>
+                    <Ionicons name="checkmark" size={22} color="#fff" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.verifiedLabel}>Aadhaar verified</Text>
+                    <Text style={styles.verifiedValue}>{aadhaarName}</Text>
+                    <Text style={styles.verifiedMasked}>{aadhaarMasked}</Text>
+                  </View>
+                </View>
               )}
 
-              {aadhaarStage === "otp" && (
+              <View style={{ height: Spacing.md }} />
+              {aadhaarStatus !== "ok" ? (
+                <PrimaryButton testID="verify-aadhaar-btn" title="Verify Aadhaar"
+                  loading={aadhaarStatus === "checking"} disabled={aadhaar.length !== 12} onPress={verifyAadhaar} />
+              ) : (
                 <>
-                  <View style={styles.infoRow}>
-                    <Ionicons name="shield-checkmark" size={18} color={Colors.info} />
-                    <Text style={styles.infoText}>OTP sent for {aadhaarMasked}</Text>
-                  </View>
-                  {aadhaarDemoOtp && (
-                    <View style={styles.demoBanner}>
-                      <Ionicons name="bulb" size={16} color={Colors.secondary} />
-                      <Text style={styles.demoText}>Demo OTP: <Text style={{ fontWeight: "800" }}>{aadhaarDemoOtp}</Text></Text>
-                    </View>
-                  )}
-                  <Label text="Enter OTP" />
-                  <Input
-                    testID="input-aadhaar-otp" placeholder="6-digit OTP" keyboardType="number-pad"
-                    value={aadhaarOtp} onChangeText={(v) => setAadhaarOtp(sanitizeDigits(v, 6))}
-                    maxLength={6} style={{ letterSpacing: 6 }}
-                  />
-                  {!!aadhaarErr && <StatusLine ok={false} msg={aadhaarErr} />}
-                  <View style={{ height: Spacing.md }} />
-                  <PrimaryButton testID="verify-aadhaar-otp-btn" title="Verify Aadhaar" loading={loadingA} onPress={verifyAadhaarOtp} />
-                  <TouchableOpacity onPress={sendAadhaarOtp} style={{ alignSelf: "center", marginTop: Spacing.sm }}>
-                    <Text style={{ color: Colors.primary, fontWeight: "700" }}>Resend OTP</Text>
-                  </TouchableOpacity>
-                </>
-              )}
-
-              {aadhaarStage === "verified" && (
-                <>
-                  <View style={styles.verifiedBox}>
-                    <View style={styles.verifiedTick}>
-                      <Ionicons name="checkmark" size={22} color="#fff" />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.verifiedLabel}>Aadhaar verified</Text>
-                      <Text style={styles.verifiedValue}>{aadhaarName}</Text>
-                      <Text style={styles.verifiedMasked}>{aadhaarMasked}</Text>
-                    </View>
-                  </View>
-                  <View style={{ height: Spacing.md }} />
                   <PrimaryButton testID="next-pan" title="Continue to PAN" onPress={() => setStep("pan")} />
                   <View style={{ height: Spacing.sm }} />
-                  <PrimaryButton title="Back" variant="secondary" onPress={() => setStep("basic")} />
+                  <PrimaryButton title="Back" variant="secondary" onPress={() => setStep("address")} />
                 </>
               )}
             </View>

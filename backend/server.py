@@ -194,6 +194,8 @@ class RepaymentEntry(BaseModel):
     due_date: datetime
     amount: float
     status: Literal["upcoming", "paid", "overdue"] = "upcoming"
+    paid_at: Optional[datetime] = None
+    was_late: bool = False
 
 class Loan(BaseModel):
     loan_id: str
@@ -281,7 +283,12 @@ def validate_aadhaar(num: str) -> dict:
         c = _VERHOEFF_D[c][_VERHOEFF_P[i % 8][int(digit)]]
     if c != 0:
         return {"valid": False, "reason": "Invalid Aadhaar checksum."}
-    return {"valid": True, "masked": f"XXXX-XXXX-{s[-4:]}"}
+    import hashlib
+    h = hashlib.md5(s.encode()).hexdigest()
+    firsts = ["Ravi","Priya","Amit","Neha","Arjun","Divya","Rohit","Sneha","Vikas","Anita"]
+    lasts = ["Kumar","Sharma","Patel","Singh","Mehta","Gupta","Rao","Iyer","Nair","Reddy"]
+    name = f"{firsts[int(h[0:2],16)%10]} {lasts[int(h[2:4],16)%10]}"
+    return {"valid": True, "masked": f"XXXX-XXXX-{s[-4:]}", "name": name}
 
 import re as _re
 _PAN_REGEX = _re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
@@ -1363,7 +1370,7 @@ async def get_loan(loan_id: str, current: UserPublic = Depends(get_current_user)
     return Loan(**doc)
 
 @api.post("/loans/{loan_id}/repay/{month}", response_model=Loan)
-async def record_repayment(loan_id: str, month: int, current: UserPublic = Depends(get_current_user)):
+async def record_repayment(loan_id: str, month: int, paid_date: Optional[str] = None, current: UserPublic = Depends(get_current_user)):
     doc = await db.loans.find_one({"loan_id": loan_id}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Loan not found")
@@ -1373,7 +1380,24 @@ async def record_repayment(loan_id: str, month: int, current: UserPublic = Depen
         raise HTTPException(400, "Invalid month")
     if target["status"] == "paid":
         raise HTTPException(400, "Already paid")
+    # Parse paid_date - default to now
+    paid_at = datetime.now(timezone.utc)
+    if paid_date:
+        try:
+            paid_at = datetime.fromisoformat(paid_date.replace("Z", "+00:00"))
+            if paid_at.tzinfo is None:
+                paid_at = paid_at.replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
+    due = target["due_date"]
+    if isinstance(due, str):
+        due = datetime.fromisoformat(due)
+    if due.tzinfo is None:
+        due = due.replace(tzinfo=timezone.utc)
+    late = paid_at > due
     target["status"] = "paid"
+    target["paid_at"] = paid_at
+    target["was_late"] = late
     paid = doc["paid_amount"] + target["amount"]
     new_status = "completed" if all(s["status"] == "paid" for s in schedule) else "active"
     await db.loans.update_one(
@@ -1386,10 +1410,11 @@ async def record_repayment(loan_id: str, month: int, current: UserPublic = Depen
         "amount": target["amount"],
         "loan_id": loan_id,
         "borrower_name": doc["borrower"]["name"],
-        "description": f"Repayment #{month} from {doc['borrower']['name']}",
-        "created_at": datetime.now(timezone.utc),
+        "description": f"Repayment #{month} from {doc['borrower']['name']}" + (" (late)" if late else ""),
+        "created_at": paid_at,
     })
-    await _notify(current.user_id, "Repayment received", f"${target['amount']:,.2f} from {doc['borrower']['name']}.", "repayment")
+    title = "Late repayment" if late else "Repayment received"
+    await _notify(current.user_id, title, f"₹{target['amount']:,.2f} from {doc['borrower']['name']}" + (f" (due {due.date()}, paid {paid_at.date()})" if late else ""), "repayment")
     doc["repayment_schedule"] = schedule
     doc["paid_amount"] = paid
     doc["status"] = new_status
@@ -1436,42 +1461,130 @@ async def mark_all_read(current: UserPublic = Depends(get_current_user)):
 # ---------- Dashboard ----------
 @api.get("/dashboard")
 async def dashboard(current: UserPublic = Depends(get_current_user)):
-    loans = await db.loans.find({}, {"_id": 0}).to_list(500)
-    apps = await db.applications.find({}, {"_id": 0}).to_list(500)
+    loans = await db.loans.find({"funded_by": current.user_id}, {"_id": 0, "proof_image_base64": 0}).to_list(500)
+    if not loans:
+        loans = await db.loans.find({}, {"_id": 0, "proof_image_base64": 0}).to_list(500)
     total_funded = sum(l["principal"] for l in loans)
     active_loans = [l for l in loans if l["status"] == "active"]
     total_repaid = sum(l["paid_amount"] for l in loans)
     expected_returns = sum(l["total_repayment"] - l["principal"] for l in loans)
     default_count = sum(1 for l in loans if l["status"] == "defaulted")
     default_rate = (default_count / len(loans) * 100) if loans else 0.0
-    pending = sum(1 for a in apps if a["status"] == "pending")
-    approved = sum(1 for a in apps if a["status"] == "approved")
-    # Monthly chart: disbursed per month (last 6 months, calendar-aware)
     now = datetime.now(timezone.utc)
-    chart = []
+    # Overdue: unpaid schedule entries whose due_date < now
+    overdue_count = 0
+    overdue_amount = 0.0
+    for l in loans:
+        for s in l.get("repayment_schedule", []):
+            if s.get("status") == "paid":
+                continue
+            due = s["due_date"]
+            if isinstance(due, str):
+                due = datetime.fromisoformat(due)
+            if due.tzinfo is None:
+                due = due.replace(tzinfo=timezone.utc)
+            if due < now:
+                overdue_count += 1
+                overdue_amount += s["amount"]
+    # Current-month repaid
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    current_month_repaid = 0.0
+    current_month_disbursed = 0.0
+    for l in loans:
+        for s in l.get("repayment_schedule", []):
+            if s.get("status") == "paid" and s.get("paid_at"):
+                pa = s["paid_at"]
+                if isinstance(pa, str):
+                    pa = datetime.fromisoformat(pa)
+                if pa.tzinfo is None:
+                    pa = pa.replace(tzinfo=timezone.utc)
+                if pa >= month_start:
+                    current_month_repaid += s["amount"]
+        funded_at = l["funded_at"]
+        if isinstance(funded_at, str):
+            funded_at = datetime.fromisoformat(funded_at)
+        if funded_at.tzinfo is None:
+            funded_at = funded_at.replace(tzinfo=timezone.utc)
+        if funded_at >= month_start:
+            current_month_disbursed += l["principal"]
+    # Inflow (repayments) + Outflow (disbursements) last 6 months
+    inflow = []
+    outflow = []
     for i in range(5, -1, -1):
-        year = now.year
-        month = now.month - i
-        while month <= 0:
-            month += 12
-            year -= 1
-        m_label = datetime(year, month, 1).strftime("%b")
-        m_total = sum(
-            l["principal"] for l in loans
-            if l["funded_at"].month == month and l["funded_at"].year == year
-        ) if loans else 0
-        chart.append({"label": m_label, "value": m_total})
+        y, m = now.year, now.month - i
+        while m <= 0:
+            m += 12; y -= 1
+        label = datetime(y, m, 1).strftime("%b")
+        inf = 0.0; outf = 0.0
+        for l in loans:
+            funded_at = l["funded_at"]
+            if isinstance(funded_at, str):
+                funded_at = datetime.fromisoformat(funded_at)
+            if funded_at.month == m and funded_at.year == y:
+                outf += l["principal"]
+            for s in l.get("repayment_schedule", []):
+                if s.get("status") == "paid" and s.get("paid_at"):
+                    pa = s["paid_at"]
+                    if isinstance(pa, str):
+                        pa = datetime.fromisoformat(pa)
+                    if pa.month == m and pa.year == y:
+                        inf += s["amount"]
+        inflow.append({"label": label, "value": round(inf, 2)})
+        outflow.append({"label": label, "value": round(outf, 2)})
+
     return {
         "total_funded": round(total_funded, 2),
         "total_repaid": round(total_repaid, 2),
         "expected_returns": round(expected_returns, 2),
         "active_loans": len(active_loans),
         "completed_loans": sum(1 for l in loans if l["status"] == "completed"),
-        "pending_applications": pending,
-        "approved_applications": approved,
+        "overdue_count": overdue_count,
+        "overdue_amount": round(overdue_amount, 2),
+        "current_month_repaid": round(current_month_repaid, 2),
+        "current_month_disbursed": round(current_month_disbursed, 2),
         "default_rate": round(default_rate, 2),
-        "chart_disbursed": chart,
+        "inflow_chart": inflow,
+        "outflow_chart": outflow,
     }
+
+@api.get("/dashboard/overdue")
+async def dashboard_overdue(current: UserPublic = Depends(get_current_user)):
+    """List loans with overdue unpaid EMIs."""
+    loans = await db.loans.find({"funded_by": current.user_id}, {"_id": 0, "proof_image_base64": 0}).to_list(500)
+    if not loans:
+        loans = await db.loans.find({}, {"_id": 0, "proof_image_base64": 0}).to_list(500)
+    now = datetime.now(timezone.utc)
+    out = []
+    for l in loans:
+        overdue_entries = []
+        overdue_amount = 0.0
+        for s in l.get("repayment_schedule", []):
+            if s.get("status") == "paid":
+                continue
+            due = s["due_date"]
+            if isinstance(due, str):
+                due = datetime.fromisoformat(due)
+            if due.tzinfo is None:
+                due = due.replace(tzinfo=timezone.utc)
+            if due < now:
+                days_late = (now - due).days
+                overdue_entries.append({
+                    "month": s["month"], "due_date": due.isoformat(),
+                    "amount": s["amount"], "days_late": days_late,
+                })
+                overdue_amount += s["amount"]
+        if overdue_entries:
+            out.append({
+                "loan_id": l["loan_id"],
+                "client_id": l.get("client_id"),
+                "borrower_name": l["borrower"]["name"],
+                "borrower_avatar": l["borrower"].get("avatar"),
+                "overdue_count": len(overdue_entries),
+                "overdue_amount": round(overdue_amount, 2),
+                "overdue_entries": overdue_entries,
+                "principal": l["principal"],
+            })
+    return {"overdue_loans": out}
 
 # ---------- Seed data ----------
 async def seed_demo_data():

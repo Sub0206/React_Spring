@@ -112,6 +112,47 @@ export function Divider() {
   return <View style={{ height: 1, backgroundColor: Colors.borderLight, marginVertical: Spacing.md }} />;
 }
 
+// Avatar with initials — no profile image dependency
+export function InitialsAvatar({
+  name,
+  size = 48,
+  color = Colors.primary,
+  testID,
+}: {
+  name?: string;
+  size?: number;
+  color?: string;
+  testID?: string;
+}) {
+  const initials = (name || "?")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase())
+    .filter(Boolean)
+    .join("") || "?";
+
+  return (
+    <View
+      testID={testID}
+      style={{
+        width: size,
+        height: size,
+        borderRadius: size / 2,
+        backgroundColor: color + "1A",
+        alignItems: "center",
+        justifyContent: "center",
+        borderWidth: 1.5,
+        borderColor: color + "33",
+      }}
+    >
+      <Text style={{ color, fontSize: Math.round(size * 0.38), fontWeight: "800" }}>
+        {initials}
+      </Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   card: {
     backgroundColor: Colors.surface,

@@ -175,7 +175,7 @@ export default function Subscribe() {
                 <Text style={styles.qrLabel}>
                   {method === "upi" ? "Scan with any UPI app" : method === "phonepe" ? "Scan with PhonePe" : "Scan with Google Pay"}
                 </Text>
-                <Text style={styles.qrHint}>UPI ID: lendify@hdfcbank</Text>
+                <Text style={styles.qrHint}>UPI ID: lendiq@hdfcbank</Text>
               </View>
             )}
 

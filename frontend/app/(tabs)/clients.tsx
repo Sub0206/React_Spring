@@ -1,11 +1,12 @@
 import React, { useCallback, useState } from "react";
 import {
-  View, Text, StyleSheet, FlatList, Image, TouchableOpacity, RefreshControl, TextInput,
+  View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, TextInput,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "../../src/api";
+import { InitialsAvatar } from "../../src/ui";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
 
 type Client = {
@@ -122,7 +123,7 @@ export default function Clients() {
               activeOpacity={0.9}
               style={[styles.card, rejected && styles.cardRejected]}
             >
-              <Image source={{ uri: item.avatar || "https://via.placeholder.com/80" }} style={styles.avatar} />
+              <InitialsAvatar name={item.name} size={52} color={rejected ? Colors.secondary : Colors.primary} />
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                   <Text style={styles.name}>{item.name}</Text>
