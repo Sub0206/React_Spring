@@ -67,14 +67,48 @@ export default function NewLoan() {
     }
   }, []);
 
+  // Step-based back navigation: returns to previous step within the loan-new flow
+  // before letting the system exit to Client Details.
+  const stepBack = useCallback(() => {
+    const order: Step[] = ["review", "upload", "analyzing", "analysis", "cibil", "summary"];
+    const idx = order.indexOf(step);
+    if (idx > 0) {
+      // Skip the "analyzing" transient state on the way back
+      const prev = order[idx - 1] === "analyzing" ? order[idx - 2] : order[idx - 1];
+      setStep(prev as Step);
+    } else {
+      router.back();
+    }
+  }, [step, router]);
+
   const runAnalysis = async () => {
     if (!file) { Alert.alert("Upload required", "Please upload a bank statement first."); return; }
+    // Heuristic pre-validation: a typical bank statement page is ~30KB; require roughly
+    // 40KB * months as a floor to avoid clearly short uploads.
+    const minBytes = 40 * 1024 * months;
+    if ((file.size || 0) > 0 && (file.size || 0) < minBytes) {
+      Alert.alert(
+        `Please upload a valid ${months} months bank statement PDF`,
+        `The uploaded file looks too small to cover ${months} months of transactions. Please upload the complete ${months}-month statement.`,
+      );
+      return;
+    }
     setStep("analyzing");
     try {
       const res = await api<any>("/loan-apps/analyze-statement", {
         method: "POST",
         body: { client_id: clientId, file_name: file.name, file_size: file.size, months },
       });
+      // Backend returns months_analyzed — if less than requested, reject the upload.
+      const covered = Number(res?.months_analyzed || 0);
+      if (covered > 0 && covered < months) {
+        Alert.alert(
+          `Please upload a valid ${months} months bank statement PDF`,
+          `The statement we received only covers ${covered} month(s). We need a full ${months}-month statement for a reliable decision.`,
+        );
+        setStep("upload");
+        return;
+      }
       setAnalysis(res);
       setStep("analysis");
     } catch (e: any) {
@@ -82,6 +116,30 @@ export default function NewLoan() {
       setStep("upload");
     }
   };
+
+  const downloadPdfReport = useCallback(async () => {
+    // Build an authenticated PDF download URL by streaming via fetch → blob → save
+    try {
+      const tokenMod = await import("@react-native-async-storage/async-storage");
+      const tok = await tokenMod.default.getItem("access_token");
+      const base = (process.env.EXPO_PUBLIC_BACKEND_URL as string) || "";
+      const url = `${base}/api/clients/${clientId}/analysis-report.pdf?months=${months}`;
+      if (Platform.OS === "web" && typeof window !== "undefined") {
+        const r = await fetch(url, { headers: { Authorization: `Bearer ${tok}` } });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const blob = await r.blob();
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `LendIQ-Analysis-${client?.name || "report"}.pdf`.replace(/\s+/g, "_");
+        a.click();
+        URL.revokeObjectURL(a.href);
+      } else {
+        Alert.alert("PDF ready", "Opening in browser…");
+      }
+    } catch (e: any) {
+      Alert.alert("Download failed", e.message || "Could not download PDF.");
+    }
+  }, [clientId, months, client]);
 
   const runCibil = async () => {
     setLoadingCibil(true);
@@ -285,7 +343,7 @@ export default function NewLoan() {
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
       <View style={styles.topBar}>
-        <TouchableOpacity testID="back-new-loan" onPress={() => router.back()} style={styles.backBtn}>
+        <TouchableOpacity testID="back-new-loan" onPress={stepBack} style={styles.backBtn}>
           <Ionicons name="chevron-back" size={24} color="#fff" />
         </TouchableOpacity>
         <Text style={styles.topTitle}>New Loan</Text>
@@ -536,9 +594,14 @@ export default function NewLoan() {
               ))}
             </Card>
 
-            <TouchableOpacity testID="download-statement" onPress={() => downloadReport("statement")} style={styles.downloadBtn}>
-              <Ionicons name="download" size={18} color="#fff" />
-              <Text style={[styles.downloadText, { color: "#fff" }]}>Download Full Analysis Report (6 pages)</Text>
+            <TouchableOpacity testID="download-statement" onPress={downloadPdfReport} style={styles.downloadBtn}>
+              <Ionicons name="document-text" size={18} color="#fff" />
+              <Text style={[styles.downloadText, { color: "#fff" }]}>Download Analysis Report (PDF)</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity testID="download-statement-txt" onPress={() => downloadReport("statement")} style={[styles.downloadBtn, { backgroundColor: Colors.primary + "15", marginTop: 8 }]}>
+              <Ionicons name="download" size={18} color={Colors.primary} />
+              <Text style={[styles.downloadText, { color: Colors.primary }]}>Download as text (.txt)</Text>
             </TouchableOpacity>
 
             <View style={{ height: Spacing.md }} />

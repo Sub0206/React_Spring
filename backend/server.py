@@ -946,7 +946,6 @@ async def analyze_statement_by_path(
     current: UserPublic = Depends(get_current_user),
 ):
     """RESTful alias for statement analysis using client_id as a path parameter."""
-    from pydantic import parse_obj_as
     body = body or {}
     payload = AnalyzeStatementRequest(
         client_id=client_id,
@@ -955,6 +954,346 @@ async def analyze_statement_by_path(
         months=int(body.get("months", 3)),
     )
     return await analyze_statement(payload, current)
+
+
+@api.get("/clients/{client_id}/analysis-report.pdf")
+async def analysis_report_pdf(client_id: str, months: int = 6, current: UserPublic = Depends(get_current_user)):
+    """Generate a branded multi-page PDF report for the most recent statement analysis."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors as rlc
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+        PageBreak, KeepTogether,
+    )
+    from io import BytesIO
+    from fastapi.responses import StreamingResponse
+
+    client = await db.clients.find_one({"client_id": client_id, "lender_id": current.user_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(404, "Client not found")
+
+    # Prefer latest analysis; fallback to fresh one
+    doc = await db.statement_analyses.find_one(
+        {"client_id": client_id, "lender_id": current.user_id},
+        sort=[("created_at", -1)], projection={"_id": 0},
+    )
+    if not doc:
+        doc = _fallback_statement_analysis(client, months)
+
+    # Colors
+    primary = rlc.HexColor("#1E40AF")
+    primary_soft = rlc.HexColor("#DBEAFE")
+    emerald = rlc.HexColor("#10B981")
+    crimson = rlc.HexColor("#DC2626")
+    amber = rlc.HexColor("#D97706")
+    gold = rlc.HexColor("#D4AF37")
+    muted = rlc.HexColor("#64748B")
+    text = rlc.HexColor("#0F172A")
+    light = rlc.HexColor("#F1F5F9")
+
+    buf = BytesIO()
+    pdf = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=18 * mm, rightMargin=18 * mm,
+        topMargin=18 * mm, bottomMargin=18 * mm,
+        title=f"LendIQ Statement Analysis - {client['name']}",
+    )
+
+    ss = getSampleStyleSheet()
+    h1 = ParagraphStyle("H1", parent=ss["Heading1"], fontSize=22, textColor=primary, leading=26, spaceAfter=6)
+    h2 = ParagraphStyle("H2", parent=ss["Heading2"], fontSize=13, textColor=primary, leading=16, spaceAfter=6, spaceBefore=6)
+    body_s = ParagraphStyle("Body", parent=ss["BodyText"], fontSize=10, textColor=text, leading=14)
+    small = ParagraphStyle("Small", parent=ss["BodyText"], fontSize=9, textColor=muted, leading=11)
+    caption = ParagraphStyle("Cap", parent=ss["BodyText"], fontSize=9, textColor=rlc.white, leading=11)
+
+    story = []
+
+    # ----- Cover / Header strip -----
+    brand_table = Table(
+        [[Paragraph("<b>LendIQ</b>", ParagraphStyle("B", fontSize=18, textColor=rlc.white, leading=20)),
+          Paragraph("Powered by SKYNOTECH", ParagraphStyle("BS", fontSize=10, textColor=rlc.white, alignment=2))]],
+        colWidths=[90 * mm, 80 * mm],
+    )
+    brand_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), primary),
+        ("TEXTCOLOR", (0, 0), (-1, -1), rlc.white),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 10),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+    ]))
+    story.append(brand_table)
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("Bank Statement Analysis Report", h1))
+    story.append(Paragraph(f"Generated on {datetime.now(timezone.utc).strftime('%d %b %Y, %H:%M UTC')}", small))
+    story.append(Spacer(1, 14))
+
+    # Customer snapshot
+    snap = Table([
+        ["Customer", doc.get("account_holder") or client["name"]],
+        ["Bank", doc.get("bank_detected", "Auto-detected")],
+        ["Account number", doc.get("account_number_masked", "XXXX-XXXX")],
+        ["Statement period", doc.get("statement_period", "—")],
+        ["Months analysed", str(doc.get("months_analyzed", months))],
+        ["Generated for", client.get("mobile", "")],
+    ], colWidths=[50 * mm, 110 * mm])
+    snap.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), light),
+        ("TEXTCOLOR", (0, 0), (0, -1), muted),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTNAME", (1, 0), (1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.3, rlc.HexColor("#E2E8F0")),
+    ]))
+    story.append(snap)
+
+    # Scorecard row
+    def _score_cell(label, value, color):
+        p1 = Paragraph(f"<b>{value}</b>", ParagraphStyle("sv", fontSize=14, textColor=color, leading=16))
+        p2 = Paragraph(label, small)
+        t = Table([[p1], [p2]], colWidths=[45 * mm])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), rlc.HexColor("#FAFBFE")),
+            ("BOX", (0, 0), (-1, -1), 1, color),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ]))
+        return t
+
+    risk_color = {"low": emerald, "medium": amber, "high": crimson}.get(str(doc.get("bounce_risk", "medium")), amber)
+    elig_color = {"strong": emerald, "moderate": amber, "weak": crimson}.get(str(doc.get("loan_eligibility", "moderate")), amber)
+
+    story.append(Spacer(1, 14))
+    scoreboard = Table([[
+        _score_cell("AI RISK", str(doc.get("bounce_risk", "—")).upper(), risk_color),
+        _score_cell("ELIGIBILITY", str(doc.get("loan_eligibility", "—")).upper(), elig_color),
+        _score_cell("AVG INCOME", f"₹{int(doc.get('avg_monthly_credit') or 0):,}", primary),
+    ]], colWidths=[55 * mm, 55 * mm, 55 * mm])
+    scoreboard.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+    story.append(scoreboard)
+
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("<b>Executive summary</b>", h2))
+    story.append(Paragraph(doc.get("summary", "Bank statement analysed — no summary."), body_s))
+
+    # ---- PAGE 2 — Cashflow
+    story.append(PageBreak())
+    story.append(Paragraph("Page 2 · Cashflow Analysis", h1))
+    story.append(Spacer(1, 10))
+
+    header = ["Month", "Credit (₹)", "Debit (₹)", "Net (₹)", "Bounces"]
+    rows = [header]
+    for c in doc.get("chart", []):
+        rows.append([c["label"], f"{c['credit']:,}", f"{c['debit']:,}",
+                     f"{(c.get('net', c['credit'] - c['debit'])):,}", str(c.get("bounces", 0))])
+    tbl = Table(rows, colWidths=[20 * mm, 35 * mm, 35 * mm, 35 * mm, 25 * mm])
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), primary),
+        ("TEXTCOLOR", (0, 0), (-1, 0), rlc.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [rlc.white, light]),
+        ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.append(tbl)
+
+    story.append(Spacer(1, 14))
+    story.append(Paragraph("<b>Balance trend</b>", h2))
+    bt_rows = [["Month", "Avg balance (₹)"]]
+    for b in doc.get("balance_trend", []):
+        bt_rows.append([b["label"], f"{b['value']:,}"])
+    bt = Table(bt_rows, colWidths=[30 * mm, 40 * mm])
+    bt.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), emerald),
+        ("TEXTCOLOR", (0, 0), (-1, 0), rlc.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [rlc.white, light]),
+        ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.append(bt)
+
+    # ---- PAGE 3 — Behaviour
+    story.append(PageBreak())
+    story.append(Paragraph("Page 3 · Behaviour Analysis", h1))
+    story.append(Spacer(1, 10))
+    beh = doc.get("behaviour", {})
+    beh_rows = [
+        ["Metric", "Value"],
+        ["Salary consistency", f"{beh.get('salary_consistency', '—')}%"],
+        ["Spending discipline", f"{round(beh.get('spending_discipline', 0))}%"],
+        ["Cash dependence", f"{beh.get('cash_dependence_pct', '—')}%"],
+        ["Unusual spikes", str(beh.get("unusual_spikes", 0))],
+        ["Frequent transfers", str(beh.get("frequent_transfers", 0))],
+        ["Risky merchants", str(beh.get("risky_merchants", 0))],
+        ["EMI load", f"{doc.get('emi_load_pct', 0)}%"],
+        ["Bounced transactions", str(doc.get("bounced_transactions", 0))],
+        ["Salary credits detected", str(doc.get("salary_credits_detected", 0))],
+    ]
+    bhtbl = Table(beh_rows, colWidths=[70 * mm, 60 * mm])
+    bhtbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), primary),
+        ("TEXTCOLOR", (0, 0), (-1, 0), rlc.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [rlc.white, light]),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(bhtbl)
+
+    # ---- PAGE 4 — Lending Decision
+    story.append(PageBreak())
+    story.append(Paragraph("Page 4 · Lending Decision", h1))
+    story.append(Spacer(1, 10))
+    decision = str(doc.get("recommended_decision", "manual_review"))
+    dec_color = emerald if decision == "approve" else amber if decision == "approve_with_caution" else crimson
+    dec_label = decision.upper().replace("_", " ")
+    dec_card = Table([
+        [Paragraph(f"<b>{dec_label}</b>", ParagraphStyle("dec", fontSize=22, textColor=rlc.white, leading=26))],
+        [Paragraph(f"Repayment capacity: <b>{doc.get('repayment_capacity_pct', 0)}%</b>", caption)],
+    ], colWidths=[170 * mm])
+    dec_card.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), dec_color),
+        ("LEFTPADDING", (0, 0), (-1, -1), 14),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 14),
+        ("TOPPADDING", (0, 0), (0, 0), 18),
+        ("BOTTOMPADDING", (0, 1), (0, 1), 18),
+    ]))
+    story.append(dec_card)
+    story.append(Spacer(1, 14))
+    lrow = [
+        ["Suggested loan amount", f"₹{int(doc.get('suggested_loan_amount', 0)):,}"],
+        ["Suggested EMI", f"₹{int(doc.get('suggested_emi', 0)):,}"],
+        ["Avg monthly credit", f"₹{int(doc.get('avg_monthly_credit', 0)):,}"],
+        ["Avg monthly debit", f"₹{int(doc.get('avg_monthly_debit', 0)):,}"],
+        ["Avg balance", f"₹{int(doc.get('avg_balance', 0)):,}"],
+        ["Highest balance", f"₹{int(doc.get('highest_balance', 0)):,}"],
+    ]
+    ltbl = Table(lrow, colWidths=[80 * mm, 80 * mm])
+    ltbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), light),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.3, rlc.HexColor("#E2E8F0")),
+    ]))
+    story.append(ltbl)
+
+    # ---- PAGE 5 — Red Flags
+    story.append(PageBreak())
+    story.append(Paragraph("Page 5 · Red Flags & Integrity", h1))
+    story.append(Spacer(1, 10))
+    flags = doc.get("red_flags", []) or []
+    for f in flags:
+        sev = str(f.get("severity", "low")).lower()
+        fcol = crimson if sev == "high" else amber if sev == "medium" else emerald
+        cell = Table([
+            [Paragraph(f"<b>[{sev.upper()}]</b> {f.get('title', '')}", ParagraphStyle("fl", fontSize=11, textColor=fcol, leading=14))],
+            [Paragraph(f.get("detail", ""), small)],
+        ], colWidths=[170 * mm])
+        cell.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), rlc.HexColor("#FAFBFE")),
+            ("BOX", (0, 0), (-1, -1), 0.6, fcol),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(cell)
+        story.append(Spacer(1, 6))
+    fc = doc.get("fraud_checks", {})
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("<b>Document integrity / Fraud checks</b>", h2))
+    fcrows = [
+        ["Edited statement likelihood", f"{fc.get('edited_statement_likelihood', 0)}%"],
+        ["Missing pages detected", "Yes" if fc.get("missing_pages_detected") else "No"],
+        ["Duplicate transactions", str(fc.get("duplicate_txn_count", 0))],
+        ["Rotated pages auto-fixed", str(fc.get("rotated_pages_fixed", 0))],
+        ["Total pages scanned", str(fc.get("page_count", 0))],
+        ["OCR confidence", f"{fc.get('ocr_confidence_pct', 0)}%"],
+    ]
+    fctbl = Table(fcrows, colWidths=[80 * mm, 80 * mm])
+    fctbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), light),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(fctbl)
+
+    # ---- PAGE 6 — Transaction categories
+    story.append(PageBreak())
+    story.append(Paragraph("Page 6 · Categorized Transactions", h1))
+    story.append(Spacer(1, 10))
+    cats = doc.get("categories", []) or []
+    crows = [["Category", "Type", "Count", "Amount (₹)", "Share %"]]
+    for c in cats:
+        crows.append([c["name"], c["type"].upper(), str(c["count"]), f"{c['amount']:,}", f"{c['share_pct']}%"])
+    ctbl = Table(crows, colWidths=[55 * mm, 25 * mm, 25 * mm, 35 * mm, 30 * mm])
+    ctbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), primary),
+        ("TEXTCOLOR", (0, 0), (-1, 0), rlc.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [rlc.white, light]),
+        ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.append(ctbl)
+
+    # Footer
+    story.append(Spacer(1, 20))
+    story.append(Paragraph(
+        "— End of report —  |  LendIQ · Powered by SKYNOTECH  |  Confidential lender copy",
+        small,
+    ))
+
+    def _footer(canvas, d):
+        canvas.saveState()
+        canvas.setFont("Helvetica", 8)
+        canvas.setFillColor(muted)
+        canvas.drawString(18 * mm, 10 * mm, f"LendIQ · {client['name']} · Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d')}")
+        canvas.drawRightString(A4[0] - 18 * mm, 10 * mm, f"Page {canvas.getPageNumber()}")
+        canvas.restoreState()
+
+    pdf.build(story, onFirstPage=_footer, onLaterPages=_footer)
+    buf.seek(0)
+    filename = f"LendIQ-Statement-{client['name'].replace(' ', '_')}-{datetime.now().strftime('%Y%m%d')}.pdf"
+    return StreamingResponse(
+        buf, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 @api.post("/loan-apps/check-cibil")
 async def check_cibil(body: CibilRequest, current: UserPublic = Depends(get_current_user)):

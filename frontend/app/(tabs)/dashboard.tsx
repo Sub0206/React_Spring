@@ -79,25 +79,6 @@ export default function Dashboard() {
             label="Funded this month" value={stats ? money(stats.current_month_disbursed) : "₹0"} />
         </View>
 
-        <TouchableOpacity
-          testID="overdue-card"
-          onPress={() => router.push("/overdue")}
-          activeOpacity={0.9}
-          style={[styles.overdueCard, stats?.overdue_count ? styles.overdueCardHot : null]}
-        >
-          <View style={[styles.overdueIcon, { backgroundColor: (stats?.overdue_count ? Colors.danger : Colors.success) + "1A" }]}>
-            <Ionicons name={stats?.overdue_count ? "warning" : "checkmark-circle"} size={22}
-              color={stats?.overdue_count ? Colors.danger : Colors.success} />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.overdueLabel}>Overdue payments (current month)</Text>
-            <Text style={[styles.overdueValue, { color: stats?.overdue_count ? Colors.danger : Colors.success }]}>
-              {stats?.overdue_count ? `${stats.overdue_count} · ${money(stats.overdue_amount)}` : "All on track"}
-            </Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
-        </TouchableOpacity>
-
         {/* Portfolio Health breakdown */}
         {stats?.portfolio_health && (
           <View style={styles.healthCard}>
@@ -107,28 +88,28 @@ export default function Dashboard() {
             </View>
             <View style={styles.healthRow}>
               <HealthTile
-                onPress={() => router.push({ pathname: "/loans", params: { filter: "on_track" } } as any)}
+                onPress={() => router.push({ pathname: "/(tabs)/loans", params: { filter: "on_track" } } as any)}
                 label="On Track"
                 count={stats.portfolio_health.on_track}
                 color={Colors.success}
                 icon="trending-up"
               />
               <HealthTile
-                onPress={() => router.push("/overdue")}
+                onPress={() => router.push({ pathname: "/(tabs)/loans", params: { filter: "overdue" } } as any)}
                 label="Overdue"
                 count={stats.portfolio_health.overdue}
                 color={Colors.danger}
                 icon="warning"
               />
               <HealthTile
-                onPress={() => router.push({ pathname: "/loans", params: { filter: "at_risk" } } as any)}
+                onPress={() => router.push({ pathname: "/(tabs)/loans", params: { filter: "at_risk" } } as any)}
                 label="At Risk"
                 count={stats.portfolio_health.at_risk}
                 color={Colors.danger}
                 icon="alert-circle"
               />
               <HealthTile
-                onPress={() => router.push({ pathname: "/loans", params: { filter: "completed" } } as any)}
+                onPress={() => router.push({ pathname: "/(tabs)/loans", params: { filter: "completed" } } as any)}
                 label="Completed"
                 count={stats.portfolio_health.completed}
                 color={Colors.primary}

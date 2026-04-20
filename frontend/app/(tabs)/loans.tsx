@@ -147,30 +147,6 @@ export default function Loans() {
         </View>
       </View>
 
-      {/* Overdue summary banner — clickable */}
-      {totalOverdue > 0 && (
-        <Pressable
-          testID="overdue-banner"
-          accessibilityRole="button"
-          onPress={goToOverdue}
-          android_ripple={{ color: "rgba(255,255,255,0.12)" }}
-          style={({ pressed }) => [styles.overdueBanner, pressed && { opacity: 0.88 }]}
-        >
-          <View style={styles.overdueIcon}>
-            <Ionicons name="warning" size={22} color="#fff" />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.overdueTitle}>
-              {totalOverdue} overdue payment{totalOverdue > 1 ? "s" : ""}
-            </Text>
-            <Text style={styles.overdueSub}>
-              ₹{overdueAmount.toLocaleString()} pending · Tap to view
-            </Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color="#fff" />
-        </Pressable>
-      )}
-
       {/* Filter pills */}
       <View style={styles.filtersWrap}>
         <ScrollView
