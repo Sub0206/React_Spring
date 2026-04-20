@@ -154,6 +154,39 @@ backend:
       - working: true
         agent: "testing"
         comment: "PASS. All three scenarios verified on live backend: (a) no override → was_late=false, paid_at=now; (b) paid_date AFTER due_date → was_late=true; (c) paid_date BEFORE due_date → was_late=false. NOTE (non-blocking naming): backend query param is named `paid_date` (not `override_date`) and response field is `was_late` (not `is_delayed`). Functionally equivalent and already consistent with frontend usage."
+      - working: true
+        agent: "testing"
+        comment: "Iteration-6 re-verification PASS. Using due_day-anchored loan, paid_date=(due-1day) → was_late=false; paid_date=(due+5days) → was_late=true. Responses 200, schedule entries correctly flip was_late flag."
+
+  - task: "Create client without verification_id (iteration 6)"
+    implemented: true
+    working: false
+    file: "/app/backend/server.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Allow POST /api/clients without verification_id field; return created client with otp_verified=false, pan_verified=true, aadhaar_verified=true."
+      - working: false
+        agent: "testing"
+        comment: "FAIL. Two critical bugs in /app/backend/server.py client_create (around lines 620-672): (1) Line 621-623 still unconditionally requires a verified OTP record — sending a body without verification_id returns HTTP 400 'Mobile OTP not verified.' instead of 200. (2) Line 672 references undefined variable `otp_verified_flag`, causing a NameError 500 Internal Server Error even when a valid verification_id IS supplied. Server log: `NameError: name 'otp_verified_flag' is not defined`. This completely breaks client creation for BOTH flows (with and without OTP). Required fix: wrap the OTP check so it only runs when body.verification_id is provided; define otp_verified_flag = bool(vr and vr.get('verified')) (defaulting to False when verification_id is None)."
+
+  - task: "Approve loan with due_day (iteration 6)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "POST /api/loan-apps/approve accepts optional due_day (1-28) to anchor repayment_schedule due_dates to that day-of-month. Without due_day, falls back to 30-day cadence."
+      - working: true
+        agent: "testing"
+        comment: "PASS. Verified on live backend with client cli_cd90671802ac: (a) approve with due_day=5, amount=100000, term=6, rate=12 → all 6 schedule due_dates land on the 5th (days: [5,5,5,5,5,5]). (b) approve WITHOUT due_day (term=3) → 30-day cadence preserved (gaps: [30, 30]). Backward-compatible."
 
 frontend:
   - task: "Dedicated CIBIL Report page"
@@ -211,9 +244,7 @@ metadata:
 
 test_plan:
   current_focus:
-    - "CIBIL check endpoint"
-    - "Dashboard inflow/outflow + overdue"
-    - "Mark-paid with override_date"
+    - "Create client without verification_id (iteration 6)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -237,3 +268,29 @@ agent_communication:
         4) POST /api/loans/{loan_id}/repay/{month} → PASS for (a) no override, (b) paid_date after due → was_late=true, (c) paid_date before due → was_late=false.
       NAMING NOTE (informational only, no action needed): review request used `override_date` / `is_delayed`, but backend implementation uses `paid_date` / `was_late`. Frontend already calls with matching names, so behavior is correct and consistent end-to-end.
       Test script: /app/backend_test.py. No backend code changes were made.
+  - agent: "testing"
+    message: |
+      Iteration-6 backend tests — 3/4 PASS, 1 FAIL (critical).
+
+      [FAIL] POST /api/clients WITHOUT verification_id
+        Two bugs in /app/backend/server.py `client_create` (around lines 620-672):
+        1. Line 621-623 still hard-requires a verified OTP. When verification_id is omitted, `db.otps.find_one({"verification_id": None, ...})` returns None → 400 "Mobile OTP not verified.".
+        2. Line 672 references an undefined variable `otp_verified_flag` → NameError → 500. This breaks BOTH flows — even valid requests WITH a verified OTP now 500. (Server log: `NameError: name 'otp_verified_flag' is not defined`.)
+        Suggested fix (main agent to apply):
+          otp_verified_flag = False
+          if body.verification_id:
+              vr = await db.otps.find_one({"verification_id": body.verification_id, "scope": "client"}, {"_id": 0})
+              if not vr or not vr.get("verified"):
+                  raise HTTPException(400, "Mobile OTP not verified.")
+              if vr.get("lender_id") != current.user_id:
+                  raise HTTPException(403, "Verification belongs to another lender.")
+              if _normalize_mobile(vr["mobile"]) != mobile:
+                  raise HTTPException(400, "Verified mobile does not match client mobile.")
+              otp_verified_flag = True
+        …then use `otp_verified_flag` on line 672.
+
+      [PASS] POST /api/loan-apps/approve with due_day=5 → all 6 schedule due_dates land on day-of-month 5 (days [5,5,5,5,5,5]).
+      [PASS] POST /api/loan-apps/approve WITHOUT due_day → backward-compatible; 30-day cadence preserved (gaps [30,30]).
+      [PASS] POST /api/loans/{id}/repay/{month}?paid_date=… → paid_date before due → was_late=false; paid_date after due → was_late=true.
+
+      Tests 2–4 were run against pre-existing client cli_cd90671802ac (Ravi Kumar) because the client_create 500 bug prevented creating a fresh one. Test script: /app/backend_test.py. No backend code was modified.

@@ -23,6 +23,7 @@ export default function LoanApprove() {
   const [amount, setAmount] = useState("");
   const [term, setTerm] = useState("12");
   const [rate, setRate] = useState("");
+  const [dueDay, setDueDay] = useState<number | null>(5); // Default: 5th of every month
   const [proof, setProof] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -81,6 +82,7 @@ export default function LoanApprove() {
         method: "POST",
         body: {
           client_id: clientId, amount: amt, term_months: months, interest_rate: ratePct,
+          due_day: dueDay || undefined,
           proof_image_base64: proof, statement_analysis: stmt, cibil_report: cib,
         },
       });
@@ -163,6 +165,53 @@ export default function LoanApprove() {
           </View>
         </Card>
 
+        {/* Monthly Due Date selector */}
+        <Card style={{ marginTop: Spacing.md }}>
+          <Text style={styles.label}>MONTHLY DUE DATE</Text>
+          <Text style={styles.dueHelper}>
+            Every month on the {dueDay ? `${dueDay}${dueDay === 1 ? "st" : dueDay === 2 ? "nd" : dueDay === 3 ? "rd" : dueDay > 20 && dueDay % 10 === 1 ? "st" : dueDay > 20 && dueDay % 10 === 2 ? "nd" : dueDay > 20 && dueDay % 10 === 3 ? "rd" : "th"}` : "— (no fixed date)"}
+          </Text>
+          <View style={styles.dueRow}>
+            {[1, 5, 10, 15, 20, 25, 28].map((d) => (
+              <TouchableOpacity
+                key={d}
+                testID={`due-day-${d}`}
+                onPress={() => setDueDay(d)}
+                style={[styles.dueChip, dueDay === d && styles.dueChipActive]}
+              >
+                <Text style={[styles.dueChipText, dueDay === d && styles.dueChipTextActive]}>
+                  {d}
+                </Text>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity
+              testID="due-day-none"
+              onPress={() => setDueDay(null)}
+              style={[styles.dueChip, dueDay === null && styles.dueChipActive]}
+            >
+              <Text style={[styles.dueChipText, dueDay === null && styles.dueChipTextActive, { fontSize: 11 }]}>
+                Auto
+              </Text>
+            </TouchableOpacity>
+          </View>
+          <View style={styles.dueCustomRow}>
+            <Text style={styles.dueCustomLabel}>Or pick any day (1–28):</Text>
+            <Input
+              testID="due-day-input"
+              keyboardType="number-pad"
+              value={dueDay ? String(dueDay) : ""}
+              placeholder="e.g. 5"
+              onChangeText={(v) => {
+                const n = parseInt(v.replace(/[^0-9]/g, ""), 10);
+                if (isNaN(n)) setDueDay(null);
+                else if (n >= 1 && n <= 28) setDueDay(n);
+              }}
+              maxLength={2}
+              style={{ width: 70, textAlign: "center" }}
+            />
+          </View>
+        </Card>
+
         <Card style={{ marginTop: Spacing.md }}>
           <Text style={styles.label}>PROOF (SCAN / UPLOAD)</Text>
           {proof ? (
@@ -229,4 +278,17 @@ const styles = StyleSheet.create({
     borderWidth: 2, borderStyle: "dashed", borderColor: Colors.border,
   },
   proofHint: { color: Colors.textMuted, fontSize: 12 },
+  dueHelper: { color: Colors.textSecondary, fontSize: 13, marginBottom: 10, fontWeight: "600" },
+  dueRow: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
+  dueChip: {
+    paddingHorizontal: 14, paddingVertical: 10,
+    backgroundColor: Colors.bgAlt, borderRadius: Radii.md, minWidth: 48,
+    alignItems: "center", justifyContent: "center",
+    borderWidth: 1.5, borderColor: "transparent",
+  },
+  dueChipActive: { backgroundColor: Colors.primary + "1A", borderColor: Colors.primary },
+  dueChipText: { fontSize: 14, fontWeight: "800", color: Colors.textPrimary },
+  dueChipTextActive: { color: Colors.primary },
+  dueCustomRow: { flexDirection: "row", alignItems: "center", marginTop: 12, gap: 10 },
+  dueCustomLabel: { fontSize: 13, color: Colors.textSecondary, flex: 1 },
 });

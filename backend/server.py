@@ -131,7 +131,7 @@ class CreateClientRequest(BaseModel):
     mobile: str
     aadhaar: str
     pan: str
-    verification_id: str
+    verification_id: Optional[str] = None
     aadhaar_verification_id: Optional[str] = None
     aadhaar_name: Optional[str] = None
     pan_name: Optional[str] = None
@@ -157,6 +157,7 @@ class ApproveLoanRequest(BaseModel):
     amount: float
     term_months: int
     interest_rate: float = 0.0
+    due_day: Optional[int] = None  # Day of month for EMI due (1-28). None = 30-day cadence from now.
     proof_image_base64: Optional[str] = None
     statement_analysis: Optional[dict] = None
     cibil_report: Optional[dict] = None
@@ -668,7 +669,7 @@ async def client_create(body: CreateClientRequest, current: UserPublic = Depends
         "pincode": body.pincode,
         "aadhaar_verified": True,
         "pan_verified": True,
-        "otp_verified": True,
+        "otp_verified": otp_verified_flag,
         "status": "active",
         "reject_reason": None,
         "reject_at": None,
@@ -676,7 +677,8 @@ async def client_create(body: CreateClientRequest, current: UserPublic = Depends
         "created_at": datetime.now(timezone.utc),
     }
     await db.clients.insert_one(doc)
-    await db.otps.delete_one({"verification_id": body.verification_id})
+    if body.verification_id:
+        await db.otps.delete_one({"verification_id": body.verification_id})
     # Strip fields not in response model
     public = {k: v for k, v in doc.items() if k != "aadhaar_last4"}
     return ClientModel(**public)
@@ -1029,14 +1031,41 @@ async def approve_loan(body: ApproveLoanRequest, current: UserPublic = Depends(g
     total = round(emi * months, 2)
     now = datetime.now(timezone.utc)
     schedule = []
-    for m in range(1, months + 1):
-        schedule.append({
-            "month": m,
-            "due_date": now + timedelta(days=30 * m),
-            "amount": emi,
-            "status": "upcoming",
-            "paid_at": None,
-        })
+    # Compute due dates: either anchored to given day-of-month or 30-day cadence
+    if body.due_day and 1 <= int(body.due_day) <= 28:
+        day = int(body.due_day)
+        # First due: nearest future month whose 'day' is at least a week from now to avoid immediate dues
+        ref_year, ref_month = now.year, now.month
+        # If today's day is past the due day, start from next month; else, use current if > 7 days away
+        if now.day >= day:
+            ref_month += 1
+            if ref_month > 12:
+                ref_month = 1; ref_year += 1
+        else:
+            if (day - now.day) < 7:
+                ref_month += 1
+                if ref_month > 12:
+                    ref_month = 1; ref_year += 1
+        for m in range(1, months + 1):
+            y, mo = ref_year, ref_month + (m - 1)
+            while mo > 12:
+                mo -= 12; y += 1
+            schedule.append({
+                "month": m,
+                "due_date": datetime(y, mo, day, 0, 0, 0, tzinfo=timezone.utc),
+                "amount": emi,
+                "status": "upcoming",
+                "paid_at": None,
+            })
+    else:
+        for m in range(1, months + 1):
+            schedule.append({
+                "month": m,
+                "due_date": now + timedelta(days=30 * m),
+                "amount": emi,
+                "status": "upcoming",
+                "paid_at": None,
+            })
     # Create application record (approved/funded in one shot)
     app_id = f"app_{uuid.uuid4().hex[:10]}"
     loan_id = f"loan_{uuid.uuid4().hex[:10]}"

@@ -3,12 +3,27 @@ import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { Colors } from "../../src/theme";
 import { Platform, useWindowDimensions } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 export default function TabsLayout() {
   const { width } = useWindowDimensions();
-  // Responsive: on narrow phones (<360) hide labels to avoid overflow; otherwise show them.
+  const insets = useSafeAreaInsets();
+
+  // Responsive labels
   const showLabels = width >= 360;
-  const baseHeight = Platform.OS === "ios" ? 86 : 68;
+
+  // Safe-area aware bottom padding so tab bar never merges with:
+  //  - iPhone home indicator
+  //  - Android 3-button nav / gesture bar / back button
+  //  - Samsung / foldable system UI
+  const BASE_PADDING_BOTTOM = Platform.OS === "ios" ? 8 : 12;
+  const MIN_BOTTOM_SPACE = Platform.OS === "ios" ? 20 : 14; // guarantees breathing room if no inset
+  const extraBottom = Math.max(insets.bottom, MIN_BOTTOM_SPACE);
+  const paddingBottom = extraBottom + BASE_PADDING_BOTTOM;
+
+  // Icon area height + label + paddings
+  const CONTENT_HEIGHT = showLabels ? 52 : 44;
+  const height = CONTENT_HEIGHT + paddingBottom;
 
   return (
     <Tabs
@@ -22,17 +37,28 @@ export default function TabsLayout() {
           backgroundColor: Colors.surface,
           borderTopWidth: 1,
           borderTopColor: Colors.borderLight,
-          height: baseHeight,
-          paddingBottom: Platform.OS === "ios" ? 28 : 10,
+          height,
+          paddingBottom,
           paddingTop: 8,
+          // Elevation / shadow for a professional lift
+          elevation: 12,
+          boxShadow: "0px -2px 12px rgba(0,0,0,0.06)",
         },
-        tabBarItemStyle: { paddingHorizontal: 2 },
+        tabBarItemStyle: {
+          paddingHorizontal: 2,
+          paddingVertical: 0,
+        },
         tabBarLabelStyle: {
           fontSize: width < 380 ? 10 : 11,
           fontWeight: "700",
           marginTop: 2,
+          marginBottom: 0,
+          includeFontPadding: false,
         },
-        tabBarIconStyle: { marginTop: showLabels ? 0 : 4 },
+        tabBarIconStyle: {
+          marginTop: showLabels ? 0 : 4,
+          marginBottom: 0,
+        },
       }}
     >
       <Tabs.Screen

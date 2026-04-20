@@ -1,10 +1,10 @@
 import React, { useCallback, useState } from "react";
-import { View, Text, StyleSheet, FlatList, Image, TouchableOpacity, RefreshControl } from "react-native";
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "../../src/api";
-import { Badge } from "../../src/ui";
+import { Badge, InitialsAvatar } from "../../src/ui";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
 
 type Loan = {
@@ -53,10 +53,9 @@ export default function Loans() {
         contentContainerStyle={{ padding: Spacing.lg, paddingBottom: Spacing.xxl }}
         ListEmptyComponent={
           <View style={styles.empty}>
-            <Image
-              source={{ uri: "https://static.prod-images.emergentagent.com/jobs/b97ea820-9246-4c66-95e8-0a7c3405dd9e/images/4a0947b8cd90531a45ae3e944cd02aa2374f9d367cc31d65c418fd3ac460f818.png" }}
-              style={{ width: 120, height: 120 }}
-            />
+            <View style={styles.emptyIcon}>
+              <Ionicons name="wallet-outline" size={48} color={Colors.primary} />
+            </View>
             <Text style={styles.emptyTitle}>No loans yet</Text>
             <Text style={styles.emptyText}>Fund your first approved application to see it here.</Text>
           </View>
@@ -71,10 +70,9 @@ export default function Loans() {
               style={styles.card}
             >
               <View style={styles.row}>
-                <Image source={{ uri: item.borrower.avatar || "https://via.placeholder.com/60" }} style={styles.avatar} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.name}>{item.borrower.name}</Text>
-                  <Text style={styles.meta}>{item.borrower.occupation}</Text>
+                  <Text style={styles.meta}>Principal ₹{item.principal.toLocaleString()}</Text>
                 </View>
                 <Badge
                   label={item.status.toUpperCase()}
@@ -119,7 +117,8 @@ const styles = StyleSheet.create({
   subtitle: { color: Colors.textSecondary, marginTop: 2 },
   card: { backgroundColor: Colors.surface, borderRadius: Radii.xl, padding: Spacing.lg, marginBottom: 12, ...Shadows.card },
   row: { flexDirection: "row", alignItems: "center", gap: Spacing.md },
-  avatar: { width: 48, height: 48, borderRadius: 24, backgroundColor: Colors.bgAlt },
+  avatar: { width: 48, height: 48, borderRadius: 24, backgroundColor: Colors.bgAlt }, // unused after avatar removal
+  emptyIcon: { width: 100, height: 100, borderRadius: 50, backgroundColor: Colors.primary + "1A", alignItems: "center", justifyContent: "center", marginBottom: Spacing.md },
   name: { fontSize: 16, fontWeight: "700", color: Colors.textPrimary },
   meta: { fontSize: 13, color: Colors.textSecondary },
   amountRow: { flexDirection: "row", justifyContent: "space-between", marginTop: Spacing.md },

@@ -10,7 +10,7 @@ import { Input, PrimaryButton } from "../../src/ui";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
 import { api } from "../../src/api";
 
-type Step = "basic" | "address" | "aadhaar" | "pan" | "otp" | "done";
+type Step = "basic" | "address" | "aadhaar" | "pan" | "done";
 
 export default function AddClient() {
   const router = useRouter();
@@ -108,17 +108,12 @@ export default function AddClient() {
   };
 
   const finalizeSave = async () => {
-    if (!vid || otp.length < 4) {
-      Alert.alert("Enter OTP", "Please enter the mobile OTP."); return;
-    }
     setLoading(true);
     try {
-      await api("/clients/verify-otp", { method: "POST", body: { verification_id: vid, otp } });
       await api("/clients", {
         method: "POST",
         body: {
           name: name.trim(), mobile, aadhaar, pan,
-          verification_id: vid,
           aadhaar_name: aadhaarName,
           pan_name: panName,
           pan_dob: panDob,
@@ -135,7 +130,7 @@ export default function AddClient() {
     } finally { setLoading(false); }
   };
 
-  const progressPct = step === "basic" ? 15 : step === "address" ? 30 : step === "aadhaar" ? 50 : step === "pan" ? 70 : step === "otp" ? 88 : 100;
+  const progressPct = step === "basic" ? 20 : step === "address" ? 40 : step === "aadhaar" ? 65 : step === "pan" ? 90 : 100;
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
@@ -153,7 +148,6 @@ export default function AddClient() {
               : step === "address" ? "Step 2 · Address"
               : step === "aadhaar" ? "Step 3 · Aadhaar KYC"
               : step === "pan" ? "Step 4 · PAN KYC"
-              : step === "otp" ? "Step 5 · Mobile verification"
               : "All done!"}
           </Text>
           <View style={styles.progressBar}>
@@ -280,34 +274,11 @@ export default function AddClient() {
                 <PrimaryButton testID="verify-pan-btn" title="Verify PAN" loading={panStatus === "checking"} disabled={pan.length !== 10} onPress={verifyPan} />
               ) : (
                 <>
-                  <PrimaryButton testID="send-client-otp" title="Send client mobile OTP" loading={loading} onPress={sendMobileOtp} />
+                  <PrimaryButton testID="submit-client-btn" title="Save client" loading={loading} onPress={finalizeSave} />
                   <View style={{ height: Spacing.sm }} />
                   <PrimaryButton title="Back" variant="secondary" onPress={() => setStep("aadhaar")} />
                 </>
               )}
-            </View>
-          )}
-
-          {step === "otp" && (
-            <View style={styles.card}>
-              <EmojiHero emoji="📱" title="Verify client mobile" sub={`OTP sent to +91 ${mobile}`} tint={Colors.success} />
-              {demoOtp && (
-                <View style={styles.demoBanner}>
-                  <Ionicons name="bulb" size={16} color={Colors.secondary} />
-                  <Text style={styles.demoText}>Demo OTP: <Text style={{ fontWeight: "800" }}>{demoOtp}</Text></Text>
-                </View>
-              )}
-              <Label text="Enter OTP" />
-              <Input
-                testID="input-client-otp" placeholder="6-digit OTP" keyboardType="number-pad"
-                value={otp} onChangeText={(v) => setOtp(sanitizeDigits(v, 6))}
-                maxLength={6} style={{ letterSpacing: 6 }}
-              />
-              <View style={{ height: Spacing.md }} />
-              <PrimaryButton testID="submit-client-btn" title="Verify & save client" loading={loading} onPress={finalizeSave} />
-              <TouchableOpacity onPress={sendMobileOtp} style={{ alignSelf: "center", marginTop: Spacing.sm }}>
-                <Text style={{ color: Colors.primary, fontWeight: "700" }}>Resend OTP</Text>
-              </TouchableOpacity>
             </View>
           )}
 
@@ -318,7 +289,7 @@ export default function AddClient() {
               </View>
               <Text style={styles.doneTitle}>{name} onboarded! 🎉</Text>
               <Text style={styles.doneSub}>
-                Aadhaar, PAN and mobile number all verified. You&apos;re ready to raise loans for this client.
+                Aadhaar and PAN verified. You&apos;re ready to raise loans for this client.
               </Text>
               <View style={{ height: Spacing.xl }} />
               <PrimaryButton testID="back-to-clients" title="View clients" onPress={() => router.replace("/(tabs)/clients")} />
