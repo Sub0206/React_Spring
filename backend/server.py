@@ -617,14 +617,17 @@ async def client_create(body: CreateClientRequest, current: UserPublic = Depends
         raise HTTPException(400, "Enter a valid 10-digit mobile number.")
     if not body.name or not body.name.strip():
         raise HTTPException(400, "Name is required.")
-    # Check OTP verification record
-    vr = await db.otps.find_one({"verification_id": body.verification_id, "scope": "client"}, {"_id": 0})
-    if not vr or not vr.get("verified"):
-        raise HTTPException(400, "Mobile OTP not verified.")
-    if vr.get("lender_id") != current.user_id:
-        raise HTTPException(403, "Verification belongs to another lender.")
-    if _normalize_mobile(vr["mobile"]) != mobile:
-        raise HTTPException(400, "Verified mobile does not match client mobile.")
+    # OTP verification is optional — if provided, validate it; otherwise proceed without.
+    otp_verified_flag = False
+    if body.verification_id:
+        vr = await db.otps.find_one({"verification_id": body.verification_id, "scope": "client"}, {"_id": 0})
+        if not vr or not vr.get("verified"):
+            raise HTTPException(400, "Mobile OTP not verified.")
+        if vr.get("lender_id") != current.user_id:
+            raise HTTPException(403, "Verification belongs to another lender.")
+        if _normalize_mobile(vr["mobile"]) != mobile:
+            raise HTTPException(400, "Verified mobile does not match client mobile.")
+        otp_verified_flag = True
     # Dedup check
     dup = await db.clients.find_one(
         {"lender_id": current.user_id, "$or": [

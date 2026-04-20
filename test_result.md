@@ -160,18 +160,21 @@ backend:
 
   - task: "Create client without verification_id (iteration 6)"
     implemented: true
-    working: false
+    working: true
     file: "/app/backend/server.py"
-    stuck_count: 1
+    stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
         comment: "Allow POST /api/clients without verification_id field; return created client with otp_verified=false, pan_verified=true, aadhaar_verified=true."
       - working: false
         agent: "testing"
-        comment: "FAIL. Two critical bugs in /app/backend/server.py client_create (around lines 620-672): (1) Line 621-623 still unconditionally requires a verified OTP record — sending a body without verification_id returns HTTP 400 'Mobile OTP not verified.' instead of 200. (2) Line 672 references undefined variable `otp_verified_flag`, causing a NameError 500 Internal Server Error even when a valid verification_id IS supplied. Server log: `NameError: name 'otp_verified_flag' is not defined`. This completely breaks client creation for BOTH flows (with and without OTP). Required fix: wrap the OTP check so it only runs when body.verification_id is provided; define otp_verified_flag = bool(vr and vr.get('verified')) (defaulting to False when verification_id is None)."
+        comment: "FAIL. Two critical bugs in /app/backend/server.py client_create (around lines 620-672): (1) Line 621-623 still unconditionally requires a verified OTP record. (2) Line 672 references undefined variable `otp_verified_flag`, causing 500 Internal Server Error even when valid verification_id is supplied."
+      - working: true
+        agent: "testing"
+        comment: "PASS after main-agent fix. Re-verified against live backend (mobile 9876543210). (a) POST /api/clients WITHOUT verification_id → 200 OK, response contains client_id=cli_3adbbd46107e, otp_verified=false, pan_verified=true, aadhaar_verified=true. (b) Backward-compat: /api/clients/send-otp → /api/clients/verify-otp → POST /api/clients with the returned verification_id → 200 OK (client cli_ac7aaabff056 created). Backend no longer raises NameError. client_create at lines 620-687 in server.py correctly initialises otp_verified_flag=False and only validates the OTP record when body.verification_id is provided."
 
   - task: "Approve loan with due_day (iteration 6)"
     implemented: true
@@ -243,8 +246,7 @@ metadata:
   test_sequence: 5
 
 test_plan:
-  current_focus:
-    - "Create client without verification_id (iteration 6)"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -292,5 +294,16 @@ agent_communication:
       [PASS] POST /api/loan-apps/approve with due_day=5 → all 6 schedule due_dates land on day-of-month 5 (days [5,5,5,5,5,5]).
       [PASS] POST /api/loan-apps/approve WITHOUT due_day → backward-compatible; 30-day cadence preserved (gaps [30,30]).
       [PASS] POST /api/loans/{id}/repay/{month}?paid_date=… → paid_date before due → was_late=false; paid_date after due → was_late=true.
+  - agent: "testing"
+    message: |
+      Iteration-6 RE-TEST after client_create fix — 4/4 PASS.
+
+      [PASS] POST /api/clients WITHOUT verification_id → 200 OK. Response: otp_verified=false, pan_verified=true, aadhaar_verified=true (client cli_3adbbd46107e). No NameError.
+      [PASS] Backward-compat POST /api/clients WITH verification_id → 200 OK (client cli_ac7aaabff056). Full flow /api/clients/send-otp → /api/clients/verify-otp → POST /api/clients(verification_id) works end-to-end.
+      [PASS] POST /api/loan-apps/approve with due_day=10 (amount=100000, term=6, rate=12) → all 6 repayment_schedule due_dates land on day 10 of their month: [10,10,10,10,10,10].
+      [PASS] POST /api/loans/{loan_id}/repay/{month}?paid_date=ISO → was_late behaviour preserved. paid_date = (due-1day) → was_late=false; paid_date = (due+5days) → was_late=true.
+
+      All tests executed against live backend at https://lending-hub-63.preview.emergentagent.com as lender 9876543210 (demo OTP). Test script: /app/backend_test.py. No backend code modified.
+
 
       Tests 2–4 were run against pre-existing client cli_cd90671802ac (Ravi Kumar) because the client_create 500 bug prevented creating a fresh one. Test script: /app/backend_test.py. No backend code was modified.

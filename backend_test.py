@@ -15,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 BASE = os.environ.get("BACKEND_URL", "https://lending-hub-63.preview.emergentagent.com").rstrip("/")
+# due_day used for test 2 (per review request iteration-6 retest: due_day=10)
+DUE_DAY = 10
 API = f"{BASE}/api"
 
 SESSION = requests.Session()
@@ -138,8 +140,8 @@ def test_1_create_client_without_verification_id():
 
 
 def test_2_approve_with_due_day(client_id: str):
-    log("\n--- Test 2: POST /api/loan-apps/approve with due_day=5 ---")
-    r = approve_loan(client_id, 100000, 6, 12, due_day=5)
+    log(f"\n--- Test 2: POST /api/loan-apps/approve with due_day={DUE_DAY} ---")
+    r = approve_loan(client_id, 100000, 6, 12, due_day=DUE_DAY)
     log(f"Status: {r.status_code}; Body: {r.text[:500]}")
     if r.status_code != 200:
         return False, f"Expected 200, got {r.status_code}: {r.text}"
@@ -151,8 +153,8 @@ def test_2_approve_with_due_day(client_id: str):
     for entry in schedule:
         due = parse_iso(entry["due_date"])
         days_seen.append(due.day)
-        if due.day != 5:
-            return False, f"Entry month {entry['month']} due_date={due.isoformat()} day={due.day} (expected 5)"
+        if due.day != DUE_DAY:
+            return False, f"Entry month {entry['month']} due_date={due.isoformat()} day={due.day} (expected {DUE_DAY})"
     log(f"All schedule due-days: {days_seen}")
     return True, loan["loan_id"]
 
