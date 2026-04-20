@@ -20,6 +20,7 @@ type Stats = {
   current_month_repaid: number;
   current_month_disbursed: number;
   default_rate: number;
+  portfolio_health?: { on_track: number; overdue: number; at_risk: number; completed: number; defaulted: number };
   inflow_chart: { label: string; value: number }[];
   outflow_chart: { label: string; value: number }[];
 };
@@ -97,6 +98,46 @@ export default function Dashboard() {
           <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
         </TouchableOpacity>
 
+        {/* Portfolio Health breakdown */}
+        {stats?.portfolio_health && (
+          <View style={styles.healthCard}>
+            <View style={styles.healthHead}>
+              <Ionicons name="pulse" size={18} color={Colors.primary} />
+              <Text style={styles.healthTitle}>Portfolio health</Text>
+            </View>
+            <View style={styles.healthRow}>
+              <HealthTile
+                onPress={() => router.push({ pathname: "/loans", params: { filter: "on_track" } } as any)}
+                label="On Track"
+                count={stats.portfolio_health.on_track}
+                color={Colors.success}
+                icon="trending-up"
+              />
+              <HealthTile
+                onPress={() => router.push("/overdue")}
+                label="Overdue"
+                count={stats.portfolio_health.overdue}
+                color={Colors.danger}
+                icon="warning"
+              />
+              <HealthTile
+                onPress={() => router.push({ pathname: "/loans", params: { filter: "at_risk" } } as any)}
+                label="At Risk"
+                count={stats.portfolio_health.at_risk}
+                color={Colors.danger}
+                icon="alert-circle"
+              />
+              <HealthTile
+                onPress={() => router.push({ pathname: "/loans", params: { filter: "completed" } } as any)}
+                label="Completed"
+                count={stats.portfolio_health.completed}
+                color={Colors.primary}
+                icon="checkmark-circle"
+              />
+            </View>
+          </View>
+        )}
+
         <Card style={{ marginTop: Spacing.md }}>
           <View style={styles.chartHeader}>
             <Ionicons name="arrow-down-circle" size={20} color={Colors.success} />
@@ -151,6 +192,23 @@ function StatBox({ icon, color, label, value, testID }: any) {
   );
 }
 
+function HealthTile({ label, count, color, icon, onPress }: { label: string; count: number; color: string; icon: any; onPress?: () => void }) {
+  return (
+    <TouchableOpacity
+      testID={`health-${label.replace(/\s+/g, "-").toLowerCase()}`}
+      onPress={onPress}
+      activeOpacity={0.85}
+      style={[styles.healthTile, { borderColor: color + "33" }]}
+    >
+      <View style={[styles.healthIcon, { backgroundColor: color + "1A" }]}>
+        <Ionicons name={icon} size={16} color={color} />
+      </View>
+      <Text style={[styles.healthCount, { color }]}>{count}</Text>
+      <Text style={styles.healthLabel}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   scroll: { padding: Spacing.lg, paddingBottom: Spacing.xxl },
@@ -186,4 +244,23 @@ const styles = StyleSheet.create({
   barCol: { flex: 1, alignItems: "center", gap: 6 },
   bar: { width: "100%", borderTopLeftRadius: 8, borderTopRightRadius: 8, minHeight: 6 },
   barLabel: { fontSize: 11, color: Colors.textMuted, fontWeight: "600" },
+
+  healthCard: {
+    backgroundColor: Colors.surface, borderRadius: Radii.lg,
+    padding: Spacing.md, marginTop: Spacing.md, ...Shadows.card,
+  },
+  healthHead: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
+  healthTitle: { fontSize: 15, fontWeight: "800", color: Colors.textPrimary },
+  healthRow: { flexDirection: "row", gap: 8 },
+  healthTile: {
+    flex: 1, paddingVertical: 12, paddingHorizontal: 8,
+    borderRadius: Radii.md, borderWidth: 1.5, alignItems: "center",
+    backgroundColor: Colors.bg,
+  },
+  healthIcon: {
+    width: 28, height: 28, borderRadius: 14,
+    alignItems: "center", justifyContent: "center", marginBottom: 6,
+  },
+  healthCount: { fontSize: 22, fontWeight: "800", letterSpacing: -0.5 },
+  healthLabel: { fontSize: 10, color: Colors.textSecondary, fontWeight: "700", marginTop: 2, letterSpacing: 0.3, textAlign: "center" },
 });

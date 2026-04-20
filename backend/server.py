@@ -1583,7 +1583,34 @@ async def dashboard(current: UserPublic = Depends(get_current_user)):
     expected_returns = sum(l["total_repayment"] - l["principal"] for l in loans)
     default_count = sum(1 for l in loans if l["status"] == "defaulted")
     default_rate = (default_count / len(loans) * 100) if loans else 0.0
+
+    # Portfolio health breakdown using global status rules
+    ph = {"on_track": 0, "overdue": 0, "at_risk": 0, "completed": 0, "defaulted": 0}
     now = datetime.now(timezone.utc)
+    for l in loans:
+        if l["status"] == "completed":
+            ph["completed"] += 1; continue
+        if l["status"] == "defaulted":
+            ph["defaulted"] += 1; continue
+        has_overdue = False
+        has_late_history = False
+        for s in l.get("repayment_schedule", []):
+            due = s["due_date"]
+            if isinstance(due, str):
+                try: due = datetime.fromisoformat(due)
+                except: due = None
+            if due is not None and due.tzinfo is None:
+                due = due.replace(tzinfo=timezone.utc)
+            if s.get("status") != "paid" and due is not None and due < now:
+                has_overdue = True
+            if s.get("status") == "paid" and s.get("was_late"):
+                has_late_history = True
+        if has_overdue:
+            ph["overdue"] += 1
+        elif has_late_history:
+            ph["at_risk"] += 1
+        else:
+            ph["on_track"] += 1
     # Overdue: unpaid schedule entries whose due_date < now
     overdue_count = 0
     overdue_amount = 0.0
@@ -1656,6 +1683,7 @@ async def dashboard(current: UserPublic = Depends(get_current_user)):
         "current_month_repaid": round(current_month_repaid, 2),
         "current_month_disbursed": round(current_month_disbursed, 2),
         "default_rate": round(default_rate, 2),
+        "portfolio_health": ph,
         "inflow_chart": inflow,
         "outflow_chart": outflow,
     }

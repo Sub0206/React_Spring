@@ -139,6 +139,9 @@ backend:
       - working: true
         agent: "testing"
         comment: "PASS. GET /api/dashboard returns all required keys: inflow_chart (6 items with label/value), outflow_chart (6 items with label/value), overdue_count, overdue_amount, total_funded, total_repaid, current_month_disbursed, current_month_repaid, active_loans, expected_returns, default_rate. GET /api/dashboard/overdue returns {overdue_loans:[]} — response shape verified via code inspection: each entry contains loan_id, borrower_name, overdue_count, overdue_amount, principal, overdue_entries[{month,due_date,amount,days_late}]. Runtime list was empty for this user (no past-due EMIs yet)."
+      - working: true
+        agent: "testing"
+        comment: "Iteration-10 regression PASS (lender 9876543210). GET /api/dashboard returns portfolio_health={'on_track':2,'overdue':7,'at_risk':4,'completed':3,'defaulted':1} with all 5 keys as integers. Sum(17) == lender's own loans (17 loans where funded_by=user_77a19af2901f). Business-logic re-derivation from the lender's repayment_schedule matches backend output EXACTLY for all 5 buckets. Concrete examples found in DB: on_track=loan_5cbcde14da (all unpaid but not yet past-due), overdue=loan_seed_l8_1_multi_a8f73d (unpaid past-due EMI), at_risk=loan_5b6c5f265e (paid-with-was_late=true AND no current overdue), completed=loan_338acb5076, defaulted=loan_seed_l10_default_644388. inflow_chart/outflow_chart still 6 {label,value} items. overdue_count/overdue_amount present. /api/dashboard/overdue returns 8 overdue loans. INFORMATIONAL ONLY (no regression, pre-existing): /api/loans has no funded_by filter so it returns 28 loans across all lenders while /api/dashboard is scoped to 17 for this lender — portfolio_health correctly matches the lender-scoped count, which is the intended behaviour."
 
   - task: "Mark-paid with override_date"
     implemented: true
@@ -363,14 +366,15 @@ agent_communication:
       Tests 2–4 were run against pre-existing client cli_cd90671802ac (Ravi Kumar) because the client_create 500 bug prevented creating a fresh one. Test script: /app/backend_test.py. No backend code was modified.
   - agent: "testing"
     message: |
-      Iteration-7 backend regression (frontend-only iteration) — 9/9 PASS against live preview backend.
+      Iteration-10 backend regression PASS (lender 9876543210 on live preview).
 
-      1) POST /api/auth/send-otp (login, 9876543210) → 200, demo_otp returned.
-         POST /api/auth/verify-otp → 200, access_token returned.
-      2) GET /api/applications?status= → all 200 with arrays:
-           pending=11, approved=2, funded=15, rejected=3. Each item's `status` matches the requested filter.
-      3) GET /api/loans → 200, 15 loans; every loan's repayment_schedule entry contains month, due_date, amount, status, was_late.
-      4) GET /api/dashboard → 200, includes overdue_count=0, overdue_amount=0.0, inflow_chart (6 pts {label,value}), outflow_chart (6 pts {label,value}).
-      5) GET /api/dashboard/overdue → 200, {overdue_loans: []} (list, empty for this user — expected given no past-due EMIs).
+      1) GET /api/dashboard → 200. NEW `portfolio_health` field present with all five integer keys: on_track=2, overdue=7, at_risk=4, completed=3, defaulted=1. Sum(17) == lender's own loan count. inflow_chart & outflow_chart still 6 {label,value}. overdue_count/overdue_amount still present.
+      2) Business-logic verification → PASS. Re-derivation of portfolio_health from each loan's repayment_schedule matches backend output EXACTLY. Concrete examples found in DB:
+         - on_track: loan_5cbcde14da (all entries unpaid but not past-due)
+         - overdue: loan_seed_l8_1_multi_a8f73d (unpaid EMI past due_date)
+         - at_risk: loan_5b6c5f265e (paid entries with was_late=true AND no current unpaid overdue)
+         - completed: loan_338acb5076 (loan.status=="completed")
+         - defaulted: loan_seed_l10_default_644388 (loan.status=="defaulted")
+      3) Regression /api/loans (200, count=28), /api/dashboard/overdue (200, 8 overdue loans), /api/auth/send-otp+verify-otp (200), /api/loan-apps/approve with due_day=15 (200; all 3 EMIs anchored to day 15), /api/loans/{id}/repay/{month}?paid_date=(due+5d) (200, was_late=True), /api/loans/{id}/undo-pay/{month} (200, status→upcoming, paid_at=None, was_late=False), /api/loans/{id}/reschedule/{month}?new_due_date=ISO (200, new_due matches exactly).
 
-      No regressions detected. No backend code was modified. Test script: /app/backend_test.py.
+      INFORMATIONAL (no regression, pre-existing): /api/loans has no funded_by filter and returns all 28 loans across lenders, while /api/dashboard is lender-scoped (17 loans). portfolio_health correctly matches the lender-scoped count — this is intended behaviour. Script: /app/backend_test.py. No backend code modified.
