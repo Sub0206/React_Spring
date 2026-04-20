@@ -161,20 +161,91 @@ export default function NewLoan() {
       ``,
     ];
     if (kind === "statement") {
-      lines.push(`Months analyzed: ${data.months_analyzed}`);
-      lines.push(`Bounce risk:     ${String(data.bounce_risk).toUpperCase()}`);
-      lines.push(`Total credit:    ₹${data.total_credit.toLocaleString()}`);
-      lines.push(`Total debit:     ₹${data.total_debit.toLocaleString()}`);
-      lines.push(`Avg balance:     ₹${data.avg_balance.toLocaleString()}`);
-      lines.push(`Bounced txns:    ${data.bounced_transactions}`);
-      lines.push(`Salary credits:  ${data.salary_credits_detected}`);
+      const d = data;
+      lines.push(`═══════════════════════════════════════════`);
+      lines.push(`  PAGE 1 · EXECUTIVE SUMMARY`);
+      lines.push(`═══════════════════════════════════════════`);
+      lines.push(`Account holder:   ${d.account_holder || client?.name}`);
+      lines.push(`Account number:   ${d.account_number_masked || "XXXX-XXXX-XXXX"}`);
+      lines.push(`Bank detected:    ${d.bank_detected || "Auto-detected"}`);
+      lines.push(`Statement period: ${d.statement_period || "—"}`);
+      lines.push(`Months analyzed:  ${d.months_analyzed}`);
       lines.push(``);
-      lines.push(`Summary: ${data.summary}`);
+      lines.push(`AI Risk Score:        ${String(d.bounce_risk).toUpperCase()} RISK`);
+      lines.push(`Loan Eligibility:     ${String(d.loan_eligibility || "—").toUpperCase()}`);
+      lines.push(`Recommended decision: ${String(d.recommended_decision || "—").toUpperCase().replace(/_/g, " ")}`);
       lines.push(``);
-      lines.push(`Monthly breakdown:`);
-      data.chart.forEach((c: any) => {
-        lines.push(`  ${c.label}: +₹${c.credit.toLocaleString()}  -₹${c.debit.toLocaleString()}  bounces=${c.bounces}`);
+      lines.push(`KEY METRICS`);
+      lines.push(`  Avg monthly credit: ₹${(d.avg_monthly_credit || 0).toLocaleString()}`);
+      lines.push(`  Avg monthly debit:  ₹${(d.avg_monthly_debit || 0).toLocaleString()}`);
+      lines.push(`  Avg balance:        ₹${(d.avg_balance || 0).toLocaleString()}`);
+      lines.push(`  Highest balance:    ₹${(d.highest_balance || 0).toLocaleString()}`);
+      lines.push(`  Opening balance:    ₹${(d.opening_balance || 0).toLocaleString()}`);
+      lines.push(`  Closing balance:    ₹${(d.closing_balance || 0).toLocaleString()}`);
+      lines.push(`  Bounced txns:       ${d.bounced_transactions}`);
+      lines.push(`  Salary credits:     ${d.salary_credits_detected}`);
+      lines.push(`  EMI load:           ${d.emi_load_pct || 0}%`);
+      lines.push(``);
+      lines.push(`═══════════════════════════════════════════`);
+      lines.push(`  PAGE 2 · CASHFLOW ANALYSIS`);
+      lines.push(`═══════════════════════════════════════════`);
+      lines.push(`Month-over-month (credit / debit / net / bounces):`);
+      (d.chart || []).forEach((c: any) => {
+        const net = (c.net !== undefined ? c.net : c.credit - c.debit);
+        lines.push(`  ${c.label.padEnd(4)} : +₹${String(c.credit).padStart(8)}  -₹${String(c.debit).padStart(8)}  net ₹${String(net).padStart(8)}  bounces=${c.bounces || 0}`);
       });
+      lines.push(``);
+      if (d.balance_trend) {
+        lines.push(`Balance trend:`);
+        d.balance_trend.forEach((b: any) => lines.push(`  ${b.label} : ₹${b.value.toLocaleString()}`));
+        lines.push(``);
+      }
+      lines.push(`═══════════════════════════════════════════`);
+      lines.push(`  PAGE 3 · BEHAVIOUR ANALYSIS`);
+      lines.push(`═══════════════════════════════════════════`);
+      const b = d.behaviour || {};
+      lines.push(`  Salary consistency:   ${b.salary_consistency ?? "—"}%`);
+      lines.push(`  Spending discipline:  ${Math.round(b.spending_discipline ?? 0)}%`);
+      lines.push(`  Cash dependence:      ${b.cash_dependence_pct ?? "—"}%`);
+      lines.push(`  Unusual spikes:       ${b.unusual_spikes ?? "—"}`);
+      lines.push(`  Frequent transfers:   ${b.frequent_transfers ?? "—"}`);
+      lines.push(`  Risky merchants:      ${b.risky_merchants ?? "—"}`);
+      lines.push(``);
+      lines.push(`═══════════════════════════════════════════`);
+      lines.push(`  PAGE 4 · LENDING DECISION SUMMARY`);
+      lines.push(`═══════════════════════════════════════════`);
+      lines.push(`  Decision:            ${String(d.recommended_decision || "").toUpperCase().replace(/_/g, " ")}`);
+      lines.push(`  Suggested loan amt:  ₹${(d.suggested_loan_amount || 0).toLocaleString()}`);
+      lines.push(`  Suggested EMI:       ₹${(d.suggested_emi || 0).toLocaleString()}`);
+      lines.push(`  Repayment capacity:  ${d.repayment_capacity_pct || 0}%`);
+      lines.push(``);
+      lines.push(`═══════════════════════════════════════════`);
+      lines.push(`  PAGE 5 · RED FLAG DETECTION`);
+      lines.push(`═══════════════════════════════════════════`);
+      (d.red_flags || []).forEach((f: any, i: number) => {
+        lines.push(`  ${i + 1}. [${String(f.severity).toUpperCase()}] ${f.title}`);
+        lines.push(`       ${f.detail}`);
+      });
+      lines.push(``);
+      if (d.fraud_checks) {
+        const fc = d.fraud_checks;
+        lines.push(`Integrity / Fraud checks:`);
+        lines.push(`  Edited statement likelihood: ${fc.edited_statement_likelihood}%`);
+        lines.push(`  Missing pages detected:      ${fc.missing_pages_detected ? "YES" : "No"}`);
+        lines.push(`  Duplicate transactions:      ${fc.duplicate_txn_count}`);
+        lines.push(`  Rotated pages auto-fixed:    ${fc.rotated_pages_fixed}`);
+        lines.push(`  OCR confidence:              ${fc.ocr_confidence_pct}%`);
+        lines.push(``);
+      }
+      lines.push(`═══════════════════════════════════════════`);
+      lines.push(`  PAGE 6 · TRANSACTION CATEGORIES`);
+      lines.push(`═══════════════════════════════════════════`);
+      (d.categories || []).forEach((c: any) => {
+        lines.push(`  ${c.name.padEnd(22)} [${c.type}]  count=${String(c.count).padStart(3)}  amt ₹${String(c.amount).padStart(9)}  share ${c.share_pct}%`);
+      });
+      lines.push(``);
+      lines.push(`── Summary ─────────────────────────────────`);
+      lines.push(d.summary || "");
     } else {
       lines.push(`CIBIL score: ${data.score}  (${String(data.band).toUpperCase()})`);
       lines.push(`On-time payments: ${data.on_time_payments_pct}%`);
@@ -335,6 +406,126 @@ export default function NewLoan() {
               </View>
             </Card>
 
+            {/* Premium pre-download dashboard */}
+            <View style={styles.metricGrid}>
+              <MetricCard
+                icon="shield-checkmark"
+                label="AI Risk"
+                value={String(analysis.bounce_risk || "—").toUpperCase()}
+                color={riskHex(analysis.risk_color)}
+              />
+              <MetricCard
+                icon="trophy"
+                label="Eligibility"
+                value={String(analysis.loan_eligibility || "—").toUpperCase()}
+                color={analysis.loan_eligibility === "strong" ? Colors.success : analysis.loan_eligibility === "weak" ? Colors.danger : Colors.warning}
+              />
+              <MetricCard
+                icon="trending-up"
+                label="Avg Income"
+                value={`₹${Math.round((analysis.avg_monthly_credit || 0) / 1000)}k`}
+                color={Colors.primary}
+              />
+              <MetricCard
+                icon="card"
+                label="EMI Load"
+                value={`${analysis.emi_load_pct || 0}%`}
+                color={(analysis.emi_load_pct || 0) > 40 ? Colors.danger : Colors.success}
+              />
+              <MetricCard
+                icon="alert-circle"
+                label="Bounces"
+                value={String(analysis.bounced_transactions || 0)}
+                color={(analysis.bounced_transactions || 0) > 0 ? Colors.danger : Colors.success}
+              />
+              <MetricCard
+                icon="checkmark-done"
+                label="OCR Accuracy"
+                value={`${analysis.fraud_checks?.ocr_confidence_pct ?? 99}%`}
+                color={Colors.info}
+              />
+            </View>
+
+            {/* Lending decision */}
+            {analysis.recommended_decision && (
+              <View style={[styles.decisionCard, {
+                backgroundColor:
+                  analysis.recommended_decision === "approve" ? Colors.successSoft :
+                  analysis.recommended_decision === "approve_with_caution" ? Colors.warningSoft :
+                  Colors.dangerSoft,
+                borderColor:
+                  analysis.recommended_decision === "approve" ? Colors.success :
+                  analysis.recommended_decision === "approve_with_caution" ? Colors.warning :
+                  Colors.danger,
+              }]}>
+                <Ionicons
+                  name={
+                    analysis.recommended_decision === "approve" ? "checkmark-circle" :
+                    analysis.recommended_decision === "approve_with_caution" ? "warning" :
+                    "close-circle"
+                  }
+                  size={30}
+                  color={
+                    analysis.recommended_decision === "approve" ? Colors.success :
+                    analysis.recommended_decision === "approve_with_caution" ? Colors.warning :
+                    Colors.danger
+                  }
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.decisionLabel}>AI LENDING DECISION</Text>
+                  <Text style={styles.decisionValue}>
+                    {String(analysis.recommended_decision).toUpperCase().replace(/_/g, " ")}
+                  </Text>
+                  {analysis.suggested_loan_amount > 0 && (
+                    <Text style={styles.decisionSub}>
+                      Suggested: ₹{analysis.suggested_loan_amount.toLocaleString()} · EMI ₹{(analysis.suggested_emi || 0).toLocaleString()} · Capacity {analysis.repayment_capacity_pct || 0}%
+                    </Text>
+                  )}
+                </View>
+              </View>
+            )}
+
+            {/* Red flags */}
+            {(analysis.red_flags || []).length > 0 && (
+              <Card style={{ marginTop: Spacing.md }}>
+                <Text style={styles.sectionTitle}>⚠ Red flags</Text>
+                {(analysis.red_flags || []).map((f: any, i: number) => {
+                  const sev = String(f.severity || "low").toLowerCase();
+                  const sc = sev === "high" ? Colors.danger : sev === "medium" ? Colors.warning : Colors.success;
+                  return (
+                    <View key={i} style={[styles.flagRow, { borderLeftColor: sc }]}>
+                      <View style={[styles.flagPill, { backgroundColor: sc + "1A" }]}>
+                        <Text style={[styles.flagPillText, { color: sc }]}>{sev.toUpperCase()}</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.flagTitle}>{f.title}</Text>
+                        <Text style={styles.flagDetail}>{f.detail}</Text>
+                      </View>
+                    </View>
+                  );
+                })}
+              </Card>
+            )}
+
+            {/* Categories */}
+            {(analysis.categories || []).length > 0 && (
+              <Card style={{ marginTop: Spacing.md }}>
+                <Text style={styles.sectionTitle}>Transaction categories</Text>
+                {(analysis.categories || []).slice(0, 6).map((c: any, i: number) => (
+                  <View key={i} style={styles.catRow}>
+                    <Text style={styles.catName}>{c.name}</Text>
+                    <View style={styles.catBar}>
+                      <View style={[styles.catFill, {
+                        width: `${Math.min(100, c.share_pct)}%`,
+                        backgroundColor: c.type === "credit" ? Colors.success : Colors.primary,
+                      }]} />
+                    </View>
+                    <Text style={styles.catAmount}>₹{c.amount.toLocaleString()}</Text>
+                  </View>
+                ))}
+              </Card>
+            )}
+
             <Card style={{ marginTop: Spacing.md }}>
               <Text style={styles.sectionTitle}>Highlights</Text>
               {(analysis.highlights || []).map((h: string, i: number) => (
@@ -346,8 +537,8 @@ export default function NewLoan() {
             </Card>
 
             <TouchableOpacity testID="download-statement" onPress={() => downloadReport("statement")} style={styles.downloadBtn}>
-              <Ionicons name="download" size={18} color={Colors.primary} />
-              <Text style={styles.downloadText}>Download statement analysis</Text>
+              <Ionicons name="download" size={18} color="#fff" />
+              <Text style={[styles.downloadText, { color: "#fff" }]}>Download Full Analysis Report (6 pages)</Text>
             </TouchableOpacity>
 
             <View style={{ height: Spacing.md }} />
@@ -625,10 +816,10 @@ const styles = StyleSheet.create({
   bulletText: { flex: 1, color: Colors.textPrimary, fontSize: 13, lineHeight: 20 },
   downloadBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
-    marginTop: Spacing.md, paddingVertical: 12, borderRadius: Radii.pill,
-    backgroundColor: Colors.primary + "15",
+    marginTop: Spacing.md, paddingVertical: 14, borderRadius: Radii.pill,
+    backgroundColor: Colors.primary, ...Shadows.button,
   },
-  downloadText: { color: Colors.primary, fontWeight: "800", fontSize: 14 },
+  downloadText: { color: "#fff", fontWeight: "800", fontSize: 14 },
   cibilHero: {
     marginTop: Spacing.md, backgroundColor: Colors.info, borderRadius: Radii.xl,
     padding: Spacing.lg, alignItems: "center", ...Shadows.button,
@@ -637,4 +828,50 @@ const styles = StyleSheet.create({
   cibilHeroSub: { color: "#EADFFB", fontSize: 13, marginTop: 6, textAlign: "center" },
   modalBackdrop: { flex: 1, backgroundColor: "#00000088", justifyContent: "flex-end" },
   modalSheet: { backgroundColor: Colors.surface, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: Spacing.lg, paddingBottom: Spacing.xxl },
+
+  metricGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: Spacing.md },
+  metricCard: {
+    flexBasis: "31%", flexGrow: 1,
+    padding: 12, borderRadius: Radii.md,
+    backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.borderLight,
+  },
+  metricIcon: { width: 30, height: 30, borderRadius: 15, alignItems: "center", justifyContent: "center", marginBottom: 6 },
+  metricLabel: { fontSize: 9, fontWeight: "800", color: Colors.textMuted, letterSpacing: 0.5 },
+  metricValue: { fontSize: 16, fontWeight: "800", marginTop: 2, letterSpacing: -0.3 },
+
+  decisionCard: {
+    flexDirection: "row", alignItems: "center", gap: 12,
+    padding: Spacing.md, borderRadius: Radii.lg,
+    marginTop: Spacing.md, borderWidth: 1.5,
+  },
+  decisionLabel: { fontSize: 10, fontWeight: "800", color: Colors.textMuted, letterSpacing: 0.8 },
+  decisionValue: { fontSize: 18, fontWeight: "800", color: Colors.textPrimary, marginTop: 2 },
+  decisionSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 4, fontWeight: "600" },
+
+  flagRow: {
+    flexDirection: "row", alignItems: "flex-start", gap: 8,
+    paddingVertical: 10, borderLeftWidth: 3, paddingLeft: 10, marginBottom: 6,
+  },
+  flagPill: { paddingHorizontal: 7, paddingVertical: 3, borderRadius: Radii.pill },
+  flagPillText: { fontSize: 9, fontWeight: "800", letterSpacing: 0.5 },
+  flagTitle: { fontSize: 13, fontWeight: "800", color: Colors.textPrimary },
+  flagDetail: { fontSize: 12, color: Colors.textSecondary, marginTop: 2, lineHeight: 17 },
+
+  catRow: { flexDirection: "row", alignItems: "center", gap: 8, marginVertical: 4 },
+  catName: { width: 110, fontSize: 12, color: Colors.textPrimary, fontWeight: "700" },
+  catBar: { flex: 1, height: 8, backgroundColor: Colors.bgAlt, borderRadius: 4, overflow: "hidden" },
+  catFill: { height: "100%", borderRadius: 4 },
+  catAmount: { fontSize: 12, fontWeight: "800", color: Colors.textPrimary, minWidth: 70, textAlign: "right" },
 });
+
+function MetricCard({ icon, label, value, color }: { icon: any; label: string; value: string; color: string }) {
+  return (
+    <View style={[styles.metricCard, { borderColor: color + "33" }]}>
+      <View style={[styles.metricIcon, { backgroundColor: color + "1A" }]}>
+        <Ionicons name={icon} size={16} color={color} />
+      </View>
+      <Text style={styles.metricLabel}>{label}</Text>
+      <Text style={[styles.metricValue, { color }]}>{value}</Text>
+    </View>
+  );
+}

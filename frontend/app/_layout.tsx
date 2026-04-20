@@ -2,6 +2,7 @@ import React, { useEffect } from "react";
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as Linking from "expo-linking";
 import { AuthProvider, useAuth } from "../src/auth";
+import { DialogProvider } from "../src/dialog";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Colors } from "../src/theme";
@@ -78,8 +79,10 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <AuthProvider>
-        <StatusBar style="dark" />
-        <AuthGate />
+        <DialogProvider>
+          <StatusBar style="dark" />
+          <AuthGate />
+        </DialogProvider>
       </AuthProvider>
     </SafeAreaProvider>
   );

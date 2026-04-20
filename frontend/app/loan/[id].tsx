@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
-  View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert,
+  View, Text, StyleSheet, ScrollView, TouchableOpacity,
   ActivityIndicator, Modal, Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -8,6 +8,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "../../src/api";
 import { Card, PrimaryButton, InitialsAvatar } from "../../src/ui";
+import { useDialog } from "../../src/dialog";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
 
 type Entry = { month: number; due_date: string; amount: number; status: string; paid_at?: string | null; was_late?: boolean };
@@ -37,6 +38,7 @@ type Action = "none" | "pay" | "reschedule" | "undo";
 export default function LoanDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const dlg = useDialog();
   const [loan, setLoan] = useState<Loan | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -50,7 +52,7 @@ export default function LoanDetail() {
     try {
       setLoan(await api<Loan>(`/loans/${id}`));
     } catch (e: any) {
-      Alert.alert("Error", e.message);
+      dlg.error("Couldn't load loan", e.message);
     } finally {
       setLoading(false);
     }
@@ -68,14 +70,16 @@ export default function LoanDetail() {
     setAction("reschedule");
   };
   const confirmUndo = (e: Entry) => {
-    Alert.alert(
-      "Rollback payment?",
-      `This will revert Month ${e.month} (₹${e.amount.toLocaleString()}) back to unpaid. Balance and dashboard counts will update.\n\nThis action is safe but should be used carefully.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Yes, undo", style: "destructive", onPress: () => submitUndo(e) },
-      ],
-    );
+    dlg.confirm({
+      title: "Rollback payment?",
+      message: `This will revert Month ${e.month} (₹${e.amount.toLocaleString()}) back to unpaid. Balance and dashboard counts will update.\n\nThis action is safe but should be used carefully.`,
+      tone: "danger",
+      icon: "arrow-undo",
+      confirmLabel: "Yes, undo",
+      cancelLabel: "Cancel",
+      destructive: true,
+      onConfirm: () => submitUndo(e),
+    });
   };
 
   const submitPay = async () => {
@@ -90,14 +94,19 @@ export default function LoanDetail() {
       setLoan(d); setAction("none"); setActive(null);
       const due = new Date(active.due_date);
       const chosen = new Date(`${dateValue}T12:00:00Z`);
-      Alert.alert(
-        chosen > due ? "Payment recorded · Overdue" : "Payment recorded",
-        chosen > due
-          ? "This EMI was paid AFTER the due date. It will appear in the Overdue dashboard."
-          : "EMI marked as paid on time.",
-      );
+      if (chosen > due) {
+        dlg.show({
+          title: "Payment recorded · Overdue",
+          message: "This EMI was paid AFTER the due date. It will appear in the Overdue dashboard as 'Overdue Paid'.",
+          tone: "danger",
+          icon: "warning",
+          actions: [{ label: "Got it", tone: "danger" }],
+        });
+      } else {
+        dlg.success("Payment recorded", "EMI marked as paid on time.");
+      }
     } catch (e: any) {
-      Alert.alert("Error", e.message);
+      dlg.error("Couldn't record payment", e.message);
     } finally { setSaving(false); }
   };
 
@@ -111,9 +120,9 @@ export default function LoanDetail() {
         { method: "POST" },
       );
       setLoan(d); setAction("none"); setActive(null);
-      Alert.alert("EMI rescheduled", `Month ${active.month} moved to ${new Date(iso).toLocaleDateString()}.`);
+      dlg.success("EMI rescheduled", `Month ${active.month} moved to ${new Date(iso).toLocaleDateString()}.`);
     } catch (e: any) {
-      Alert.alert("Error", e.message);
+      dlg.error("Reschedule failed", e.message);
     } finally { setSaving(false); }
   };
 
@@ -122,9 +131,9 @@ export default function LoanDetail() {
     try {
       const d = await api<Loan>(`/loans/${id}/undo-pay/${e.month}`, { method: "POST" });
       setLoan(d);
-      Alert.alert("Payment rolled back", `Month ${e.month} is back to unpaid. Dashboard updated.`);
+      dlg.success("Payment rolled back", `Month ${e.month} is back to unpaid. Dashboard updated.`);
     } catch (err: any) {
-      Alert.alert("Error", err.message);
+      dlg.error("Undo failed", err.message);
     } finally { setSaving(false); }
   };
 

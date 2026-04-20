@@ -276,13 +276,66 @@ frontend:
         agent: "main"
         comment: "Login shows 'LendIQ / Powered by SKYNOTECH' with LQ badge. Fixed 'LENDIFY' → Brand.name in downloadReport. Changed 'lendify@hdfcbank' → 'lendiq@hdfcbank' and terms reference."
 
+backend:
+  - task: "Enriched statement analyzer (iteration 11)"
+    implemented: false
+    working: false
+    file: "/app/backend/server.py"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: false
+        agent: "testing"
+        comment: |
+          Iteration-11 FAIL on live backend (lender 9876543210).
+
+          (A) PATH MISSING: POST /api/clients/{client_id}/analyze-statement does NOT exist
+              → returns 405/404. Only /api/loan-apps/analyze-statement exists (body-based
+              client_id). The reviewer explicitly asked for the RESTful sub-resource path.
+
+          (B) ENRICHED SCHEMA NOT RETURNED by the existing /api/loan-apps/analyze-statement
+              endpoint. The primary (LLM) path in server.py:877-926 still uses the OLD
+              prompt schema (lines 894-915) which only asks the model for:
+                months_analyzed, total_credit, total_debit, avg_balance,
+                bounced_transactions, salary_credits_detected, bounce_risk, risk_color,
+                chart[{label,credit,debit,bounces}], summary, highlights
+              The enriched premium fields were added ONLY inside _fallback_statement_analysis
+              (lines 757-875) — they are never produced by the LLM path. Since the LLM
+              returned successfully, the caller gets the OLD shape.
+
+              MISSING keys vs review spec (30 required → 13 present, 17 missing):
+                bank_detected, account_holder, account_number_masked, statement_period,
+                opening_balance, closing_balance, avg_monthly_credit, avg_monthly_debit,
+                highest_balance, emi_load_pct, loan_eligibility, recommended_decision,
+                suggested_loan_amount, suggested_emi, repayment_capacity_pct,
+                balance_trend, categories, red_flags, behaviour, fraud_checks
+
+              Also chart entries are missing the required `net` field (contain only
+              label/credit/debit/bounces — not net).
+
+          (C) Regressions all PASS:
+              - GET /api/dashboard → portfolio_health={on_track:3, overdue:6, at_risk:5,
+                completed:3, defaulted:1} (all 5 int keys present) ✓
+              - POST /api/loans/{id}/reschedule/{month}?new_due_date=2028-03-15T12:00:00Z → 200 ✓
+              - POST /api/loans/{id}/undo-pay/{month} → 200 ✓
+
+          FIX REQUIRED (main agent):
+            1. Either add a new endpoint `POST /api/clients/{client_id}/analyze-statement`
+               (preferred per reviewer) OR confirm reviewer accepts existing path — AND
+            2. Update the LLM prompt in analyze_statement() to request ALL 30 enriched
+               fields including balance_trend, categories, red_flags, behaviour,
+               fraud_checks, and `net` inside chart entries, OR short-circuit to
+               _fallback_statement_analysis() (which already has the complete schema).
+
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 5
+  test_sequence: 6
 
 test_plan:
-  current_focus: []
+  current_focus:
+    - "Enriched statement analyzer (iteration 11)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -377,4 +430,38 @@ agent_communication:
          - defaulted: loan_seed_l10_default_644388 (loan.status=="defaulted")
       3) Regression /api/loans (200, count=28), /api/dashboard/overdue (200, 8 overdue loans), /api/auth/send-otp+verify-otp (200), /api/loan-apps/approve with due_day=15 (200; all 3 EMIs anchored to day 15), /api/loans/{id}/repay/{month}?paid_date=(due+5d) (200, was_late=True), /api/loans/{id}/undo-pay/{month} (200, status→upcoming, paid_at=None, was_late=False), /api/loans/{id}/reschedule/{month}?new_due_date=ISO (200, new_due matches exactly).
 
-      INFORMATIONAL (no regression, pre-existing): /api/loans has no funded_by filter and returns all 28 loans across lenders, while /api/dashboard is lender-scoped (17 loans). portfolio_health correctly matches the lender-scoped count — this is intended behaviour. Script: /app/backend_test.py. No backend code modified.
+      INFORMATIONAL (no regression, pre-existing): /api/loans has no funded_by filter and returns all 28 loans across lenders, while /api/dashboard is lender-scoped (17 loans). portfolio_health correctly matches the lender-scoped count — this is intended behaviour. Script: /app/backend_test.py. No backend code modified.  - agent: "testing"
+    message: |
+      Iteration-11 backend tests — enriched statement analyzer FAILS. Regressions PASS.
+
+      PATH MISMATCH (critical):
+        POST /api/clients/{client_id}/analyze-statement → 404 Not Found.
+        This endpoint was NEVER implemented. Only /api/loan-apps/analyze-statement
+        (body-based client_id) exists — reviewer explicitly asked for the RESTful
+        sub-resource path.
+
+      SCHEMA MISMATCH (critical):
+        Tested the existing /api/loan-apps/analyze-statement as fallback.
+        13/30 required top-level fields present. 17 MISSING: bank_detected,
+        account_holder, account_number_masked, statement_period, opening_balance,
+        closing_balance, avg_monthly_credit, avg_monthly_debit, highest_balance,
+        emi_load_pct, loan_eligibility, recommended_decision, suggested_loan_amount,
+        suggested_emi, repayment_capacity_pct, balance_trend, categories, red_flags,
+        behaviour, fraud_checks.
+        Also chart entries are missing the required `net` field.
+
+        ROOT CAUSE: server.py:877-926 LLM prompt still asks for the OLD basic schema
+        (only ~11 fields). The enriched payload was added ONLY inside
+        _fallback_statement_analysis() (757-875) and is never reached because the
+        Claude call succeeds. Either (1) update the LLM prompt to request all 30
+        enriched fields including `net` in chart, balance_trend, categories,
+        red_flags, behaviour, fraud_checks — OR (2) short-circuit through the
+        fallback function which already has the complete schema.
+
+      REGRESSIONS — ALL PASS:
+        • GET /api/dashboard → 200. portfolio_health={on_track:3, overdue:6,
+          at_risk:5, completed:3, defaulted:1} (all 5 int keys).
+        • POST /api/loans/loan_d55828a374/reschedule/1?new_due_date=2028-03-15T12:00:00Z → 200.
+        • POST /api/loans/loan_d55828a374/undo-pay/1 → 200.
+
+      Test script: /app/backend_test.py. No backend code modified (per instructions).
