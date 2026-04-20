@@ -71,19 +71,6 @@ class ClientModel(BaseModel):
     mobile: str
     aadhaar_masked: str
     pan: str
-    aadhaar_verified: bool = False
-    pan_verified: bool = False
-    otp_verified: bool = False
-    avatar: Optional[str] = None
-    created_at: datetime
-
-class ClientModel(BaseModel):
-    client_id: str
-    lender_id: str
-    name: str
-    mobile: str
-    aadhaar_masked: str
-    pan: str
     aadhaar_name: Optional[str] = None
     pan_name: Optional[str] = None
     pan_dob: Optional[str] = None
