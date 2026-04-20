@@ -1362,6 +1362,210 @@ Band rules: 300-579 poor/red, 580-669 fair/yellow, 670-749 good/green, 750-900 e
     parsed.pop("_id", None)
     return parsed
 
+@api.get("/clients/{client_id}/cibil-report.pdf")
+async def cibil_report_pdf(client_id: str, current: UserPublic = Depends(get_current_user)):
+    """Generate a branded PDF for the most recent CIBIL report."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors as rlc
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak,
+    )
+    from io import BytesIO
+    from fastapi.responses import StreamingResponse
+
+    client = await db.clients.find_one({"client_id": client_id, "lender_id": current.user_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(404, "Client not found")
+
+    # Most recent CIBIL; fallback to a deterministic mock if none saved
+    doc = await db.cibil_reports.find_one(
+        {"client_id": client_id, "lender_id": current.user_id},
+        sort=[("created_at", -1)], projection={"_id": 0},
+    )
+    if not doc:
+        import hashlib, random as _r
+        seed = int(hashlib.md5(client["pan"].encode()).hexdigest()[:8], 16)
+        rnd = _r.Random(seed)
+        score = rnd.randint(520, 820)
+        band, col = (
+            ("excellent", "blue") if score >= 750 else
+            ("good", "green") if score >= 670 else
+            ("fair", "yellow") if score >= 580 else ("poor", "red")
+        )
+        doc = {
+            "score": score, "band": band, "band_color": col,
+            "on_time_payments_pct": round(rnd.uniform(75, 99), 1),
+            "credit_utilization_pct": round(rnd.uniform(15, 75), 1),
+            "total_accounts": rnd.randint(2, 9),
+            "active_loans": rnd.randint(0, 4),
+            "hard_enquiries_6m": rnd.randint(0, 5),
+            "factors": [
+                {"label": "Payment history", "impact": "positive" if score >= 700 else "negative", "detail": "Recent on-time EMI pattern"},
+                {"label": "Credit utilization", "impact": "neutral", "detail": "Within typical range"},
+                {"label": "Credit mix", "impact": "positive", "detail": "Healthy blend of secured/unsecured"},
+                {"label": "Enquiry velocity", "impact": "negative" if score < 650 else "neutral", "detail": "Recent enquiries observed"},
+            ],
+            "summary": f"CIBIL score {score} ({band}). Overall credit discipline appears {band}.",
+            "name": client["name"], "pan": client["pan"],
+        }
+
+    # Palette
+    primary = rlc.HexColor("#1E40AF")
+    emerald = rlc.HexColor("#10B981")
+    crimson = rlc.HexColor("#DC2626")
+    amber   = rlc.HexColor("#D97706")
+    muted   = rlc.HexColor("#64748B")
+    text    = rlc.HexColor("#0F172A")
+    light   = rlc.HexColor("#F1F5F9")
+
+    band_color_map = {"blue": rlc.HexColor("#2196F3"), "green": emerald, "yellow": amber, "red": crimson}
+    score_color = band_color_map.get(str(doc.get("band_color", "green")), emerald)
+
+    buf = BytesIO()
+    pdf = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=18 * mm, rightMargin=18 * mm,
+        topMargin=18 * mm, bottomMargin=18 * mm,
+        title=f"LendIQ CIBIL Report - {client['name']}",
+    )
+    ss = getSampleStyleSheet()
+    h1    = ParagraphStyle("H1", parent=ss["Heading1"], fontSize=22, textColor=primary, leading=26, spaceAfter=6)
+    h2    = ParagraphStyle("H2", parent=ss["Heading2"], fontSize=13, textColor=primary, leading=16, spaceAfter=6, spaceBefore=6)
+    body_s = ParagraphStyle("Body", parent=ss["BodyText"], fontSize=10, textColor=text, leading=14)
+    small  = ParagraphStyle("Small", parent=ss["BodyText"], fontSize=9, textColor=muted, leading=11)
+
+    story = []
+    # Header strip
+    brand_table = Table(
+        [[Paragraph("<b>LendIQ</b>", ParagraphStyle("B", fontSize=18, textColor=rlc.white, leading=20)),
+          Paragraph("Powered by SKYNOTECH", ParagraphStyle("BS", fontSize=10, textColor=rlc.white, alignment=2))]],
+        colWidths=[90 * mm, 80 * mm],
+    )
+    brand_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), primary),
+        ("TEXTCOLOR", (0, 0), (-1, -1), rlc.white),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 10),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+    ]))
+    story.append(brand_table)
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("CIBIL Credit Report", h1))
+    story.append(Paragraph(f"Generated on {datetime.now(timezone.utc).strftime('%d %b %Y, %H:%M UTC')}", small))
+    story.append(Spacer(1, 12))
+
+    # Snapshot
+    snap = Table([
+        ["Customer", doc.get("name") or client["name"]],
+        ["PAN", doc.get("pan") or client.get("pan", "—")],
+        ["Mobile", client.get("mobile", "—")],
+        ["Report ID", doc.get("report_id", "—")],
+    ], colWidths=[50 * mm, 110 * mm])
+    snap.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), light),
+        ("TEXTCOLOR", (0, 0), (0, -1), muted),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.3, rlc.HexColor("#E2E8F0")),
+    ]))
+    story.append(snap)
+    story.append(Spacer(1, 18))
+
+    # Score hero
+    score = int(doc.get("score", 0))
+    band = str(doc.get("band", "—")).upper()
+    hero = Table(
+        [[Paragraph(f"<b>{score}</b>", ParagraphStyle("s", fontSize=48, textColor=rlc.white, leading=52, alignment=1)),
+          Paragraph(f"<b>{band}</b><br/><font size=9>CIBIL Score (300 – 900)</font>",
+                    ParagraphStyle("b", fontSize=16, textColor=rlc.white, leading=18, alignment=1))]],
+        colWidths=[75 * mm, 95 * mm], rowHeights=[80]
+    )
+    hero.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), score_color),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 14),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 14),
+    ]))
+    story.append(hero)
+    story.append(Spacer(1, 14))
+
+    # Metrics
+    metrics = Table([
+        ["On-time payments",    f"{doc.get('on_time_payments_pct', 0)}%"],
+        ["Credit utilization",  f"{doc.get('credit_utilization_pct', 0)}%"],
+        ["Total accounts",      str(doc.get("total_accounts", 0))],
+        ["Active loans",        str(doc.get("active_loans", 0))],
+        ["Hard enquiries (6m)", str(doc.get("hard_enquiries_6m", 0))],
+    ], colWidths=[80 * mm, 80 * mm])
+    metrics.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), light),
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.3, rlc.HexColor("#E2E8F0")),
+    ]))
+    story.append(metrics)
+    story.append(Spacer(1, 14))
+
+    story.append(Paragraph("<b>Summary</b>", h2))
+    story.append(Paragraph(doc.get("summary") or "—", body_s))
+    story.append(Spacer(1, 12))
+
+    # Factors
+    story.append(Paragraph("<b>Key factors</b>", h2))
+    for f in (doc.get("factors") or []):
+        imp = str(f.get("impact", "neutral")).lower()
+        col = emerald if imp == "positive" else crimson if imp == "negative" else muted
+        cell = Table([
+            [Paragraph(f"<b>[{imp.upper()}]</b> {f.get('label', '')}", ParagraphStyle("fl", fontSize=11, textColor=col, leading=14))],
+            [Paragraph(f.get("detail", ""), small)],
+        ], colWidths=[170 * mm])
+        cell.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), rlc.HexColor("#FAFBFE")),
+            ("BOX", (0, 0), (-1, -1), 0.6, col),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(cell)
+        story.append(Spacer(1, 6))
+
+    story.append(Spacer(1, 18))
+    story.append(Paragraph(
+        "— End of report —  |  LendIQ · Powered by SKYNOTECH  |  Confidential lender copy", small,
+    ))
+
+    def _footer(canvas, d):
+        canvas.saveState()
+        canvas.setFont("Helvetica", 8)
+        canvas.setFillColor(muted)
+        canvas.drawString(18 * mm, 10 * mm, f"LendIQ · {client['name']} · Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d')}")
+        canvas.drawRightString(A4[0] - 18 * mm, 10 * mm, f"Page {canvas.getPageNumber()}")
+        canvas.restoreState()
+
+    pdf.build(story, onFirstPage=_footer, onLaterPages=_footer)
+    buf.seek(0)
+    filename = f"LendIQ-CIBIL-{client['name'].replace(' ', '_')}-{datetime.now().strftime('%Y%m%d')}.pdf"
+    return StreamingResponse(
+        buf, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+
 # ---------- Subscriptions ----------
 PLANS = [
     {"id": "starter", "name": "Starter Loan", "price": 2999, "features": ["Up to 10 active clients", "Basic KYC verification", "Mobile OTP verification", "Email support"]},

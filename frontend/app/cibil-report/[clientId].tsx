@@ -1,11 +1,12 @@
 import React, { useMemo } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, Alert } from "react-native";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import Svg, { Circle, G, Path } from "react-native-svg";
 import { Card, PrimaryButton } from "../../src/ui";
-import { Colors, Radii, Spacing, Brand } from "../../src/theme";
+import { Colors, Radii, Spacing } from "../../src/theme";
+import { downloadPdf } from "../../src/pdf";
 
 type Cibil = {
   score: number;
@@ -63,41 +64,15 @@ export default function CibilReport() {
 
   const color = bandHex(cibil.band_color);
 
-  const downloadReport = () => {
-    const lines: string[] = [
-      "============================================",
-      `  ${Brand.name} · CIBIL CREDIT REPORT`,
-      "============================================",
-      `Client: ${cibil.name || "—"}`,
-      `PAN: ${cibil.pan || "—"}`,
-      `Generated: ${new Date().toLocaleString()}`,
-      "",
-      `CIBIL score: ${cibil.score}  (${String(cibil.band).toUpperCase()})`,
-      `On-time payments: ${cibil.on_time_payments_pct}%`,
-      `Credit utilization: ${cibil.credit_utilization_pct}%`,
-      `Total accounts: ${cibil.total_accounts}`,
-      `Active loans: ${cibil.active_loans}`,
-      `Hard enquiries (6m): ${cibil.hard_enquiries_6m}`,
-      "",
-      `Summary: ${cibil.summary || ""}`,
-      "",
-      "Factors:",
-    ];
-    (cibil.factors || []).forEach((f) =>
-      lines.push(`  [${String(f.impact).toUpperCase()}] ${f.label} — ${f.detail}`)
-    );
-    const content = lines.join("\n");
-
-    if (Platform.OS === "web" && typeof window !== "undefined") {
-      const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `lendiq-cibil-${cibil.name || "report"}.txt`.replace(/\s+/g, "_");
-      a.click();
-      URL.revokeObjectURL(url);
-    } else {
-      Alert.alert("Report ready", content.slice(0, 1500));
+  const downloadReport = async () => {
+    try {
+      const safe = (cibil.name || "report").replace(/\s+/g, "_");
+      await downloadPdf(
+        `/api/clients/${clientId}/cibil-report.pdf`,
+        `cibil_analysis_report_${safe}.pdf`,
+      );
+    } catch (e: any) {
+      Alert.alert("Download failed", e?.message || "Could not download CIBIL PDF.");
     }
   };
 
@@ -255,8 +230,8 @@ export default function CibilReport() {
         />
         <View style={{ height: Spacing.sm }} />
         <TouchableOpacity testID="download-cibil" onPress={downloadReport} style={styles.downloadBtn}>
-          <Ionicons name="download" size={18} color={Colors.primary} />
-          <Text style={styles.downloadText}>Download CIBIL report (.txt)</Text>
+          <Ionicons name="document-text" size={18} color={Colors.primary} />
+          <Text style={styles.downloadText}>Download Report (PDF)</Text>
         </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>

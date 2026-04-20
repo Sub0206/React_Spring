@@ -69,16 +69,6 @@ export default function AuthScreen() {
     }
   };
 
-  const googleLogin = () => {
-    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-    if (typeof window === "undefined") {
-      Alert.alert("Google login", "Please use the web preview to sign in with Google.");
-      return;
-    }
-    const redirectUrl = window.location.origin + "/";
-    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
-  };
-
   const resetToForm = () => {
     setStep("form");
     setOtp("");
@@ -152,22 +142,6 @@ export default function AuthScreen() {
                   onPress={handleSendOtp}
                   loading={loading}
                 />
-
-                <View style={styles.dividerRow}>
-                  <View style={styles.line} />
-                  <Text style={styles.or}>or</Text>
-                  <View style={styles.line} />
-                </View>
-
-                <TouchableOpacity
-                  testID="google-signin"
-                  onPress={googleLogin}
-                  style={styles.googleBtn}
-                  activeOpacity={0.9}
-                >
-                  <Ionicons name="logo-google" size={20} color="#EA4335" />
-                  <Text style={styles.googleText}>Continue with Google</Text>
-                </TouchableOpacity>
               </>
             ) : (
               <>

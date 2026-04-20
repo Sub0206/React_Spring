@@ -1,15 +1,16 @@
 import React, { useEffect, useState, useCallback } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert,
-  ActivityIndicator, Platform, Modal,
+  ActivityIndicator, Modal,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import { Input, PrimaryButton, Card, Badge, InitialsAvatar } from "../../src/ui";
-import { Colors, Radii, Shadows, Spacing, Brand } from "../../src/theme";
+import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
 import { api } from "../../src/api";
+import { downloadPdf } from "../../src/pdf";
 
 type Client = {
   client_id: string; name: string; mobile: string;
@@ -118,24 +119,12 @@ export default function NewLoan() {
   };
 
   const downloadPdfReport = useCallback(async () => {
-    // Build an authenticated PDF download URL by streaming via fetch → blob → save
     try {
-      const tokenMod = await import("@react-native-async-storage/async-storage");
-      const tok = await tokenMod.default.getItem("access_token");
-      const base = (process.env.EXPO_PUBLIC_BACKEND_URL as string) || "";
-      const url = `${base}/api/clients/${clientId}/analysis-report.pdf?months=${months}`;
-      if (Platform.OS === "web" && typeof window !== "undefined") {
-        const r = await fetch(url, { headers: { Authorization: `Bearer ${tok}` } });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const blob = await r.blob();
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = `LendIQ-Analysis-${client?.name || "report"}.pdf`.replace(/\s+/g, "_");
-        a.click();
-        URL.revokeObjectURL(a.href);
-      } else {
-        Alert.alert("PDF ready", "Opening in browser…");
-      }
+      const name = (client?.name || "report").replace(/\s+/g, "_");
+      await downloadPdf(
+        `/api/clients/${clientId}/analysis-report.pdf?months=${months}`,
+        `document_analysis_report_${name}.pdf`,
+      );
     } catch (e: any) {
       Alert.alert("Download failed", e.message || "Could not download PDF.");
     }
@@ -203,133 +192,6 @@ export default function NewLoan() {
     } catch (e: any) {
       Alert.alert("Failed", e.message);
     } finally { setRejecting(false); }
-  };
-
-  const downloadReport = (kind: "statement" | "cibil") => {
-    const data = kind === "statement" ? analysis : cibil;
-    if (!data) return;
-    const header = kind === "statement" ? "BANK STATEMENT ANALYSIS" : "CIBIL CREDIT REPORT";
-    const lines: string[] = [
-      `============================================`,
-      `  ${Brand.name} · ${header}`,
-      `============================================`,
-      `Client: ${client?.name}`,
-      `PAN: ${client?.pan}  |  Mobile: +91 ${client?.mobile}`,
-      `Generated: ${new Date().toLocaleString()}`,
-      ``,
-    ];
-    if (kind === "statement") {
-      const d = data;
-      lines.push(`═══════════════════════════════════════════`);
-      lines.push(`  PAGE 1 · EXECUTIVE SUMMARY`);
-      lines.push(`═══════════════════════════════════════════`);
-      lines.push(`Account holder:   ${d.account_holder || client?.name}`);
-      lines.push(`Account number:   ${d.account_number_masked || "XXXX-XXXX-XXXX"}`);
-      lines.push(`Bank detected:    ${d.bank_detected || "Auto-detected"}`);
-      lines.push(`Statement period: ${d.statement_period || "—"}`);
-      lines.push(`Months analyzed:  ${d.months_analyzed}`);
-      lines.push(``);
-      lines.push(`AI Risk Score:        ${String(d.bounce_risk).toUpperCase()} RISK`);
-      lines.push(`Loan Eligibility:     ${String(d.loan_eligibility || "—").toUpperCase()}`);
-      lines.push(`Recommended decision: ${String(d.recommended_decision || "—").toUpperCase().replace(/_/g, " ")}`);
-      lines.push(``);
-      lines.push(`KEY METRICS`);
-      lines.push(`  Avg monthly credit: ₹${(d.avg_monthly_credit || 0).toLocaleString()}`);
-      lines.push(`  Avg monthly debit:  ₹${(d.avg_monthly_debit || 0).toLocaleString()}`);
-      lines.push(`  Avg balance:        ₹${(d.avg_balance || 0).toLocaleString()}`);
-      lines.push(`  Highest balance:    ₹${(d.highest_balance || 0).toLocaleString()}`);
-      lines.push(`  Opening balance:    ₹${(d.opening_balance || 0).toLocaleString()}`);
-      lines.push(`  Closing balance:    ₹${(d.closing_balance || 0).toLocaleString()}`);
-      lines.push(`  Bounced txns:       ${d.bounced_transactions}`);
-      lines.push(`  Salary credits:     ${d.salary_credits_detected}`);
-      lines.push(`  EMI load:           ${d.emi_load_pct || 0}%`);
-      lines.push(``);
-      lines.push(`═══════════════════════════════════════════`);
-      lines.push(`  PAGE 2 · CASHFLOW ANALYSIS`);
-      lines.push(`═══════════════════════════════════════════`);
-      lines.push(`Month-over-month (credit / debit / net / bounces):`);
-      (d.chart || []).forEach((c: any) => {
-        const net = (c.net !== undefined ? c.net : c.credit - c.debit);
-        lines.push(`  ${c.label.padEnd(4)} : +₹${String(c.credit).padStart(8)}  -₹${String(c.debit).padStart(8)}  net ₹${String(net).padStart(8)}  bounces=${c.bounces || 0}`);
-      });
-      lines.push(``);
-      if (d.balance_trend) {
-        lines.push(`Balance trend:`);
-        d.balance_trend.forEach((b: any) => lines.push(`  ${b.label} : ₹${b.value.toLocaleString()}`));
-        lines.push(``);
-      }
-      lines.push(`═══════════════════════════════════════════`);
-      lines.push(`  PAGE 3 · BEHAVIOUR ANALYSIS`);
-      lines.push(`═══════════════════════════════════════════`);
-      const b = d.behaviour || {};
-      lines.push(`  Salary consistency:   ${b.salary_consistency ?? "—"}%`);
-      lines.push(`  Spending discipline:  ${Math.round(b.spending_discipline ?? 0)}%`);
-      lines.push(`  Cash dependence:      ${b.cash_dependence_pct ?? "—"}%`);
-      lines.push(`  Unusual spikes:       ${b.unusual_spikes ?? "—"}`);
-      lines.push(`  Frequent transfers:   ${b.frequent_transfers ?? "—"}`);
-      lines.push(`  Risky merchants:      ${b.risky_merchants ?? "—"}`);
-      lines.push(``);
-      lines.push(`═══════════════════════════════════════════`);
-      lines.push(`  PAGE 4 · LENDING DECISION SUMMARY`);
-      lines.push(`═══════════════════════════════════════════`);
-      lines.push(`  Decision:            ${String(d.recommended_decision || "").toUpperCase().replace(/_/g, " ")}`);
-      lines.push(`  Suggested loan amt:  ₹${(d.suggested_loan_amount || 0).toLocaleString()}`);
-      lines.push(`  Suggested EMI:       ₹${(d.suggested_emi || 0).toLocaleString()}`);
-      lines.push(`  Repayment capacity:  ${d.repayment_capacity_pct || 0}%`);
-      lines.push(``);
-      lines.push(`═══════════════════════════════════════════`);
-      lines.push(`  PAGE 5 · RED FLAG DETECTION`);
-      lines.push(`═══════════════════════════════════════════`);
-      (d.red_flags || []).forEach((f: any, i: number) => {
-        lines.push(`  ${i + 1}. [${String(f.severity).toUpperCase()}] ${f.title}`);
-        lines.push(`       ${f.detail}`);
-      });
-      lines.push(``);
-      if (d.fraud_checks) {
-        const fc = d.fraud_checks;
-        lines.push(`Integrity / Fraud checks:`);
-        lines.push(`  Edited statement likelihood: ${fc.edited_statement_likelihood}%`);
-        lines.push(`  Missing pages detected:      ${fc.missing_pages_detected ? "YES" : "No"}`);
-        lines.push(`  Duplicate transactions:      ${fc.duplicate_txn_count}`);
-        lines.push(`  Rotated pages auto-fixed:    ${fc.rotated_pages_fixed}`);
-        lines.push(`  OCR confidence:              ${fc.ocr_confidence_pct}%`);
-        lines.push(``);
-      }
-      lines.push(`═══════════════════════════════════════════`);
-      lines.push(`  PAGE 6 · TRANSACTION CATEGORIES`);
-      lines.push(`═══════════════════════════════════════════`);
-      (d.categories || []).forEach((c: any) => {
-        lines.push(`  ${c.name.padEnd(22)} [${c.type}]  count=${String(c.count).padStart(3)}  amt ₹${String(c.amount).padStart(9)}  share ${c.share_pct}%`);
-      });
-      lines.push(``);
-      lines.push(`── Summary ─────────────────────────────────`);
-      lines.push(d.summary || "");
-    } else {
-      lines.push(`CIBIL score: ${data.score}  (${String(data.band).toUpperCase()})`);
-      lines.push(`On-time payments: ${data.on_time_payments_pct}%`);
-      lines.push(`Credit utilization: ${data.credit_utilization_pct}%`);
-      lines.push(`Total accounts: ${data.total_accounts}`);
-      lines.push(`Active loans: ${data.active_loans}`);
-      lines.push(`Hard enquiries (6m): ${data.hard_enquiries_6m}`);
-      lines.push(``);
-      lines.push(`Summary: ${data.summary}`);
-      lines.push(``);
-      lines.push(`Factors:`);
-      (data.factors || []).forEach((f: any) =>
-        lines.push(`  [${String(f.impact).toUpperCase()}] ${f.label} — ${f.detail}`));
-    }
-    const content = lines.join("\n");
-    if (Platform.OS === "web" && typeof window !== "undefined") {
-      const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `lendiq-${kind}-${client?.name || "report"}.txt`.replace(/\s+/g, "_");
-      a.click();
-      URL.revokeObjectURL(url);
-    } else {
-      Alert.alert("Report ready", content.slice(0, 1500));
-    }
   };
 
   if (!client) {
@@ -596,12 +458,7 @@ export default function NewLoan() {
 
             <TouchableOpacity testID="download-statement" onPress={downloadPdfReport} style={styles.downloadBtn}>
               <Ionicons name="document-text" size={18} color="#fff" />
-              <Text style={[styles.downloadText, { color: "#fff" }]}>Download Analysis Report (PDF)</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity testID="download-statement-txt" onPress={() => downloadReport("statement")} style={[styles.downloadBtn, { backgroundColor: Colors.primary + "15", marginTop: 8 }]}>
-              <Ionicons name="download" size={18} color={Colors.primary} />
-              <Text style={[styles.downloadText, { color: Colors.primary }]}>Download as text (.txt)</Text>
+              <Text style={[styles.downloadText, { color: "#fff" }]}>Download Report (PDF)</Text>
             </TouchableOpacity>
 
             <View style={{ height: Spacing.md }} />

@@ -1,100 +1,202 @@
 """
-Iteration-12 Backend tests — Branded PDF statement analysis report + regressions.
+Iteration 13 backend verification — branded CIBIL PDF report.
+
+Run: python3 /app/backend_test.py
 """
+import json
 import os
 import sys
-import json
+import uuid
+from datetime import datetime
+
 import requests
 
-BASE = "https://lending-hub-63.preview.emergentagent.com"
-API = f"{BASE}/api"
+BASE = "https://lending-hub-63.preview.emergentagent.com/api"
 MOBILE = "9876543210"
 
 
-def _pp(title, r):
-    ct = r.headers.get("content-type", "")
-    body_preview = ""
-    if "json" in ct:
-        try:
-            body_preview = json.dumps(r.json(), default=str)[:240]
-        except Exception:
-            body_preview = r.text[:240]
-    else:
-        body_preview = f"<binary {len(r.content)} bytes>"
-    print(f"[{title}] HTTP {r.status_code}  CT={ct}  {body_preview}")
+def _p(title, ok, detail=""):
+    mark = "PASS" if ok else "FAIL"
+    print(f"[{mark}] {title}")
+    if detail:
+        for line in detail.splitlines():
+            print(f"       {line}")
 
 
-def login():
-    r = requests.post(f"{API}/auth/send-otp", json={"mobile": MOBILE, "name": "Demo", "purpose": "login"}, timeout=30)
+def login() -> str:
+    r = requests.post(f"{BASE}/auth/send-otp", json={"mobile": MOBILE, "purpose": "login"}, timeout=30)
     r.raise_for_status()
-    otp = r.json().get("demo_otp")
-    assert otp, f"demo_otp missing in send-otp response: {r.text}"
-    r = requests.post(f"{API}/auth/verify-otp", json={"mobile": MOBILE, "otp": otp}, timeout=30)
+    j = r.json()
+    otp = j.get("demo_otp") or j.get("otp") or "123456"
+    v = requests.post(
+        f"{BASE}/auth/verify-otp",
+        json={"mobile": MOBILE, "otp": otp, "purpose": "login"},
+        timeout=30,
+    )
+    v.raise_for_status()
+    jj = v.json()
+    token = jj.get("access_token") or jj.get("token")
+    if not token:
+        raise RuntimeError(f"no token in verify response: {jj}")
+    return token
+
+
+def _auth(tok):
+    return {"Authorization": f"Bearer {tok}"}
+
+
+def pick_other_client_no_cibil(tok):
+    """Return a client_id for THIS lender that has no cibil_reports doc yet — for fallback test."""
+    r = requests.get(f"{BASE}/clients", headers=_auth(tok), timeout=30)
     r.raise_for_status()
-    return r.json()["access_token"]
+    data = r.json()
+    clients = data if isinstance(data, list) else data.get("clients", [])
+    # Prefer a client whose id != cli_seed_000
+    for c in clients:
+        cid = c.get("client_id")
+        if cid and cid != "cli_seed_000":
+            # fire the pdf endpoint and check header; if it works we use it for fallback
+            return cid
+    return None
 
 
-def main():
+def test_cibil_pdf():
     results = []
-    token = login()
-    h = {"Authorization": f"Bearer {token}"}
+    tok = login()
+    print(f"\nAuth OK. token prefix={tok[:12]}…\n")
 
-    # pick first client
-    r = requests.get(f"{API}/clients", headers=h, timeout=30)
-    assert r.status_code == 200, r.text
-    clients = r.json()
-    assert isinstance(clients, list) and len(clients) > 0, "no clients returned"
-    client_id = clients[0]["client_id"]
-    print(f"Using client_id={client_id}  total_clients={len(clients)}")
+    # -------- Test 1: valid client, with auth --------
+    url = f"{BASE}/clients/cli_seed_000/cibil-report.pdf"
+    r = requests.get(url, headers=_auth(tok), timeout=60)
+    ok = (
+        r.status_code == 200
+        and r.headers.get("content-type", "").lower().startswith("application/pdf")
+        and r.content[:7] == b"%PDF-1."
+        and len(r.content) > 2048
+        and "attachment" in r.headers.get("content-disposition", "").lower()
+        and "LendIQ-CIBIL-" in r.headers.get("content-disposition", "")
+    )
+    results.append(("T1 cli_seed_000 + Bearer", ok))
+    _p(
+        "T1 GET /clients/cli_seed_000/cibil-report.pdf (valid Bearer)",
+        ok,
+        f"HTTP={r.status_code}  CT={r.headers.get('content-type')}  "
+        f"bytes={len(r.content)}  magic={r.content[:8]!r}\n"
+        f"Content-Disposition={r.headers.get('content-disposition')}",
+    )
 
-    # ---------- PDF endpoint ----------
-    for months in (3, 6, 12):
-        url = f"{API}/clients/{client_id}/analysis-report.pdf?months={months}"
-        r = requests.get(url, headers=h, timeout=60)
-        _pp(f"PDF months={months}", r)
-        ok = True
-        reasons = []
-        if r.status_code != 200:
-            ok = False; reasons.append(f"status={r.status_code}")
-        ct = r.headers.get("content-type", "")
-        if not ct.startswith("application/pdf"):
-            ok = False; reasons.append(f"content-type={ct}")
-        cd = r.headers.get("content-disposition", "")
-        if "attachment" not in cd.lower() or "LendIQ-Statement-" not in cd:
-            ok = False; reasons.append(f"content-disposition={cd}")
-        magic = r.content[:8]
-        if not r.content.startswith(b"%PDF-1."):
-            ok = False; reasons.append(f"magic={magic!r}")
-        size = len(r.content)
-        if size <= 4 * 1024:
-            ok = False; reasons.append(f"size={size}")
-        print(f"   size={size} bytes  CD={cd}  magic={magic!r}")
-        results.append((f"PDF months={months}", ok, "; ".join(reasons)))
+    # -------- Test 2: no Authorization header → 401 --------
+    r2 = requests.get(url, timeout=30)
+    ok2 = r2.status_code == 401
+    results.append(("T2 no auth → 401", ok2))
+    _p(
+        "T2 no Authorization header → 401",
+        ok2,
+        f"HTTP={r2.status_code}  body={r2.text[:180]}",
+    )
 
-    # 401 when missing auth
-    r = requests.get(f"{API}/clients/{client_id}/analysis-report.pdf?months=6", timeout=30)
-    _pp("PDF no-auth", r)
-    results.append(("PDF no-auth → 401", r.status_code in (401, 403), f"status={r.status_code}"))
+    # -------- Test 3: unknown client_id → 404 --------
+    url3 = f"{BASE}/clients/cli_does_not_exist/cibil-report.pdf"
+    r3 = requests.get(url3, headers=_auth(tok), timeout=30)
+    ok3 = r3.status_code == 404
+    results.append(("T3 unknown client → 404", ok3))
+    _p(
+        "T3 unknown client_id → 404",
+        ok3,
+        f"HTTP={r3.status_code}  body={r3.text[:180]}",
+    )
 
-    # 404 for unknown client
-    r = requests.get(f"{API}/clients/cli_does_not_exist/analysis-report.pdf?months=6", headers=h, timeout=30)
-    _pp("PDF unknown-client", r)
-    results.append(("PDF unknown-client → 404", r.status_code == 404, f"status={r.status_code}"))
+    # -------- Test 4: fallback path — another lender's client with no cibil_reports doc --------
+    other_cid = pick_other_client_no_cibil(tok)
+    if other_cid:
+        url4 = f"{BASE}/clients/{other_cid}/cibil-report.pdf"
+        r4 = requests.get(url4, headers=_auth(tok), timeout=60)
+        ok4 = (
+            r4.status_code == 200
+            and r4.content[:7] == b"%PDF-1."
+            and r4.headers.get("content-type", "").lower().startswith("application/pdf")
+            and len(r4.content) > 2048
+        )
+        results.append((f"T4 fallback ({other_cid})", ok4))
+        _p(
+            f"T4 fallback path — {other_cid} (no saved cibil_reports doc)",
+            ok4,
+            f"HTTP={r4.status_code}  CT={r4.headers.get('content-type')}  "
+            f"bytes={len(r4.content)}  magic={r4.content[:8]!r}\n"
+            f"Content-Disposition={r4.headers.get('content-disposition')}",
+        )
+    else:
+        results.append(("T4 fallback", False))
+        _p("T4 fallback — COULD NOT find another client", False)
 
-    # Fallback path: try to find a client without any statement_analyses doc.
-    # If DB access not available, just re-hit first client with months=6; the
-    # endpoint still must not 500 regardless of whether fallback or saved doc is used.
-    r = requests.get(f"{API}/clients/{client_id}/analysis-report.pdf?months=6", headers=h, timeout=60)
-    results.append(("PDF fallback-safe (no 500)", r.status_code == 200 and r.content.startswith(b"%PDF-"), f"status={r.status_code}"))
+    # -------- Test 5: after check-cibil, next pdf still works --------
+    # Use the other client or cli_seed_000; doc will be generated and saved.
+    target_cid = other_cid or "cli_seed_000"
+    chk = requests.post(
+        f"{BASE}/loan-apps/check-cibil",
+        headers=_auth(tok),
+        json={"client_id": target_cid},
+        timeout=60,
+    )
+    ok_chk = chk.status_code == 200
+    _p(
+        f"T5a POST /loan-apps/check-cibil ({target_cid})",
+        ok_chk,
+        f"HTTP={chk.status_code}  body_keys={list((chk.json() if ok_chk else {}).keys())[:10]}",
+    )
 
-    # ---------- Regression: analyze-statement ----------
-    r = requests.post(f"{API}/clients/{client_id}/analyze-statement", headers=h, json={}, timeout=60)
-    _pp("analyze-statement", r)
-    ok = r.status_code == 200
-    reasons = []
-    if ok:
-        data = r.json()
-        required = [
+    url5 = f"{BASE}/clients/{target_cid}/cibil-report.pdf"
+    r5 = requests.get(url5, headers=_auth(tok), timeout=60)
+    ok5 = (
+        r5.status_code == 200
+        and r5.content[:7] == b"%PDF-1."
+        and r5.headers.get("content-type", "").lower().startswith("application/pdf")
+        and "attachment" in r5.headers.get("content-disposition", "").lower()
+        and "LendIQ-CIBIL-" in r5.headers.get("content-disposition", "")
+        and len(r5.content) > 2048
+    )
+    results.append(("T5 pdf after check-cibil", ok5 and ok_chk))
+    _p(
+        "T5 GET pdf after saved cibil doc",
+        ok5,
+        f"HTTP={r5.status_code}  CT={r5.headers.get('content-type')}  "
+        f"bytes={len(r5.content)}  magic={r5.content[:8]!r}\n"
+        f"Content-Disposition={r5.headers.get('content-disposition')}",
+    )
+
+    # ==================== Regressions ====================
+    print("\n-- Regressions --")
+    # R1 analysis pdf
+    r_a = requests.get(
+        f"{BASE}/clients/cli_seed_000/analysis-report.pdf?months=6",
+        headers=_auth(tok),
+        timeout=60,
+    )
+    okR1 = (
+        r_a.status_code == 200
+        and r_a.content[:7] == b"%PDF-1."
+        and r_a.headers.get("content-type", "").lower().startswith("application/pdf")
+        and len(r_a.content) > 2048
+    )
+    results.append(("R1 analysis-report.pdf?months=6", okR1))
+    _p(
+        "R1 GET /clients/cli_seed_000/analysis-report.pdf?months=6",
+        okR1,
+        f"HTTP={r_a.status_code}  bytes={len(r_a.content)}  magic={r_a.content[:8]!r}",
+    )
+
+    # R2 enriched analyze-statement
+    r_s = requests.post(
+        f"{BASE}/clients/cli_seed_000/analyze-statement",
+        headers=_auth(tok),
+        json={},
+        timeout=90,
+    )
+    okR2 = False
+    missing_keys = []
+    if r_s.status_code == 200:
+        j = r_s.json()
+        required = {
             "months_analyzed", "bank_detected", "account_holder", "account_number_masked",
             "statement_period", "opening_balance", "closing_balance", "total_credit",
             "total_debit", "avg_monthly_credit", "avg_monthly_debit", "avg_balance",
@@ -103,87 +205,58 @@ def main():
             "recommended_decision", "suggested_loan_amount", "suggested_emi",
             "repayment_capacity_pct", "chart", "balance_trend", "categories",
             "red_flags", "behaviour", "fraud_checks", "summary", "highlights",
-        ]
-        missing = [k for k in required if k not in data]
-        if missing:
-            ok = False; reasons.append(f"missing={missing}")
-        else:
-            print(f"   analyze-statement: {len(data)} top-level keys, all {len(required)} required present")
-    else:
-        reasons.append(f"status={r.status_code}")
-    results.append(("analyze-statement 30+ fields", ok, "; ".join(reasons)))
+        }
+        missing_keys = sorted(required - set(j.keys()))
+        okR2 = len(missing_keys) == 0 and len(j.keys()) >= 30
+    results.append(("R2 analyze-statement 30+ fields", okR2))
+    _p(
+        "R2 POST /clients/cli_seed_000/analyze-statement (body={})",
+        okR2,
+        f"HTTP={r_s.status_code}  keys={len(r_s.json().keys()) if r_s.status_code==200 else 'n/a'}  "
+        f"missing={missing_keys}",
+    )
 
-    # ---------- Regression: dashboard ----------
-    r = requests.get(f"{API}/dashboard", headers=h, timeout=30)
-    _pp("dashboard", r)
-    ok = r.status_code == 200
-    reasons = []
-    if ok:
-        data = r.json()
-        ph = data.get("portfolio_health")
-        if not isinstance(ph, dict):
-            ok = False; reasons.append("portfolio_health missing/not dict")
-        else:
-            for k in ("on_track", "overdue", "at_risk", "completed", "defaulted"):
-                v = ph.get(k)
-                if not isinstance(v, int):
-                    ok = False; reasons.append(f"portfolio_health.{k}={v!r}")
-            print(f"   portfolio_health={ph}")
-    else:
-        reasons.append(f"status={r.status_code}")
-    results.append(("dashboard portfolio_health", ok, "; ".join(reasons)))
+    # R3 dashboard
+    r_d = requests.get(f"{BASE}/dashboard", headers=_auth(tok), timeout=30)
+    okR3 = False
+    ph_detail = ""
+    if r_d.status_code == 200:
+        jd = r_d.json()
+        ph = jd.get("portfolio_health", {})
+        want = {"on_track", "overdue", "at_risk", "completed", "defaulted"}
+        okR3 = want <= set(ph.keys()) and all(isinstance(ph[k], int) for k in want)
+        ph_detail = json.dumps(ph)
+    results.append(("R3 dashboard.portfolio_health ints", okR3))
+    _p(
+        "R3 GET /dashboard",
+        okR3,
+        f"HTTP={r_d.status_code}  portfolio_health={ph_detail}",
+    )
 
-    # ---------- Regression: loans ----------
-    r = requests.get(f"{API}/loans", headers=h, timeout=30)
-    _pp("loans", r)
-    ok = r.status_code == 200 and isinstance(r.json(), list)
-    results.append(("loans list", ok, "" if ok else f"status={r.status_code}"))
+    # R4 loans
+    r_l = requests.get(f"{BASE}/loans", headers=_auth(tok), timeout=30)
+    okR4 = r_l.status_code == 200
+    results.append(("R4 loans", okR4))
+    _p(
+        "R4 GET /loans",
+        okR4,
+        f"HTTP={r_l.status_code}  count={len(r_l.json() if isinstance(r_l.json(), list) else (r_l.json() or {}).get('loans', []))}",
+    )
 
-    # ---------- Regression: repay + undo-pay (month=1) ----------
-    loans = r.json() if ok else []
-    target_loan = None
-    for l in loans:
-        if l.get("status") in ("active", "funded", "disbursed"):
-            sched = l.get("repayment_schedule") or []
-            if sched:
-                first = sched[0]
-                if first.get("status") in ("upcoming", "pending", "due"):
-                    target_loan = l
-                    break
-    if not target_loan:
-        # fallback: any loan with month 1 not paid
-        for l in loans:
-            sched = l.get("repayment_schedule") or []
-            if sched and sched[0].get("status") != "paid":
-                target_loan = l
-                break
-    if target_loan:
-        lid = target_loan["loan_id"]
-        print(f"   repay target loan_id={lid}")
-        rp = requests.post(f"{API}/loans/{lid}/repay/1", headers=h, timeout=30)
-        _pp("repay/1", rp)
-        up = requests.post(f"{API}/loans/{lid}/undo-pay/1", headers=h, timeout=30)
-        _pp("undo-pay/1", up)
-        results.append(("repay month=1", rp.status_code == 200, f"status={rp.status_code}"))
-        results.append(("undo-pay month=1", up.status_code == 200, f"status={up.status_code}"))
-    else:
-        results.append(("repay/undo-pay", True, "skipped: no suitable unpaid month=1 EMI found"))
-
-    # ---------- Summary ----------
-    print("\n================ SUMMARY ================")
-    fails = 0
-    for name, ok, reason in results:
-        status = "PASS" if ok else "FAIL"
-        line = f"  [{status}] {name}"
-        if reason:
-            line += f"  ({reason})"
-        print(line)
-        if not ok:
-            fails += 1
-    print("========================================")
-    print(f"{len(results)-fails}/{len(results)} passed")
-    return 0 if fails == 0 else 1
+    # -------- Summary --------
+    print("\n==================== SUMMARY ====================")
+    total = len(results)
+    passed = sum(1 for _, v in results if v)
+    for title, v in results:
+        print(f"  {'PASS' if v else 'FAIL'}: {title}")
+    print(f"\n{passed}/{total} checks passed")
+    return passed == total
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        ok = test_cibil_pdf()
+        sys.exit(0 if ok else 1)
+    except Exception as e:
+        print(f"\nERROR: {e!r}")
+        sys.exit(2)

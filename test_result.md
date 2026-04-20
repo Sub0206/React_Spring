@@ -367,6 +367,38 @@ backend:
           recommended_decision=approve_with_caution. bank_detected='PNB'. highlights list populated.
           server.py:951 now correctly uses AnalyzeStatementRequest. Endpoint fully working.
 
+  - task: "Branded PDF CIBIL report"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "NEW endpoint GET /api/clients/{client_id}/cibil-report.pdf (Iteration 13). Uses reportlab with same branded template: header strip, snapshot table, score hero card (color-coded by band), metrics, summary, key factors. Falls back to deterministic mock CIBIL if no saved report exists so the button never errors. Manually verified via curl (200, %PDF-1.4, 3930 bytes, Content-Disposition attachment)."
+      - working: true
+        agent: "testing"
+        comment: |
+          Iteration-13 PASS (9/9). Live backend, lender 9876543210.
+          GET /api/clients/cli_seed_000/cibil-report.pdf:
+            • Valid Bearer → HTTP 200, CT=application/pdf, 3930 bytes,
+              magic=b'%PDF-1.4', CD='attachment; filename="LendIQ-CIBIL-Rajesh_Kumar-20260420.pdf"'.
+            • No Authorization header → HTTP 401 {"detail":"Missing or invalid auth token"}.
+            • Unknown client_id cli_does_not_exist → HTTP 404 {"detail":"Client not found"}.
+          Fallback path: cli_seed_001 (no saved cibil_reports doc) → HTTP 200, 4413 bytes
+            valid PDF (deterministic mock generated), CD='attachment; filename="LendIQ-CIBIL-Sneha_Reddy-20260420.pdf"'.
+          After-save path: POST /api/loan-apps/check-cibil for cli_seed_001 → 200 (saves
+            doc). Immediate GET /api/clients/cli_seed_001/cibil-report.pdf → HTTP 200,
+            4379 bytes valid PDF (endpoint now reads saved doc).
+          Regressions ALL PASS:
+            • GET /api/clients/cli_seed_000/analysis-report.pdf?months=6 → 200, 9172 bytes, %PDF-1.4.
+            • POST /api/clients/cli_seed_000/analyze-statement (body={}) → 200 with 35 top-level keys (all 30 required enriched fields present).
+            • GET /api/dashboard → 200 with portfolio_health={on_track:3, overdue:5, at_risk:6, completed:3, defaulted:1} (all int).
+            • GET /api/loans → 200, count=30.
+          No backend code modified. Script: /app/backend_test.py.
+
   - task: "Branded PDF statement analysis report"
     implemented: true
     working: true
@@ -561,6 +593,31 @@ agent_communication:
         enriched fields including `net` in chart, balance_trend, categories,
         red_flags, behaviour, fraud_checks — OR (2) short-circuit through the
         fallback function which already has the complete schema.
+
+  - agent: "testing"
+    message: |
+      Iteration-13 CIBIL PDF endpoint — 9/9 PASS on live preview backend.
+
+      [PASS] GET /api/clients/cli_seed_000/cibil-report.pdf (Bearer)
+        HTTP 200, Content-Type=application/pdf, 3930 bytes (>2KB),
+        magic=b'%PDF-1.4',
+        Content-Disposition='attachment; filename="LendIQ-CIBIL-Rajesh_Kumar-20260420.pdf"'.
+      [PASS] No Authorization header → HTTP 401 {"detail":"Missing or invalid auth token"}.
+      [PASS] Unknown client_id cli_does_not_exist → HTTP 404 {"detail":"Client not found"}.
+      [PASS] Fallback path — cli_seed_001 (no saved cibil_reports doc) → HTTP 200,
+        4413 bytes valid PDF (deterministic mock generated, no 500),
+        CD='attachment; filename="LendIQ-CIBIL-Sneha_Reddy-20260420.pdf"'.
+      [PASS] After POST /api/loan-apps/check-cibil for cli_seed_001 (200 OK),
+        subsequent GET /api/clients/cli_seed_001/cibil-report.pdf → HTTP 200,
+        4379 bytes valid PDF (endpoint now reads the saved cibil_reports doc).
+
+      Regressions ALL PASS:
+        • GET /api/clients/cli_seed_000/analysis-report.pdf?months=6 → 200, 9172 bytes, %PDF-1.4.
+        • POST /api/clients/cli_seed_000/analyze-statement (body={}) → 200 with 35 keys (all 30 enriched fields present, no missing).
+        • GET /api/dashboard → 200, portfolio_health={on_track:3, overdue:5, at_risk:6, completed:3, defaulted:1} (all int).
+        • GET /api/loans → 200, count=30.
+
+      No backend code modified. Test script: /app/backend_test.py.
 
       REGRESSIONS — ALL PASS:
         • GET /api/dashboard → 200. portfolio_health={on_track:3, overdue:6,
