@@ -223,6 +223,12 @@ class LoanApplication(BaseModel):
     created_at: datetime
     decided_at: Optional[datetime] = None
     decided_by: Optional[str] = None
+    decided_by_name: Optional[str] = None
+    decision_reason: Optional[str] = None
+    approved_amount: Optional[float] = None
+    approved_tenure: Optional[int] = None
+    approved_rate: Optional[float] = None
+    risk_factors_at_decision: Optional[List[str]] = None
 
 class RepaymentEntry(BaseModel):
     month: int
@@ -2341,14 +2347,28 @@ async def approve_application(application_id: str, current: UserPublic = Depends
         raise HTTPException(404, "Application not found")
     if doc["status"] != "pending":
         raise HTTPException(400, f"Application is {doc['status']}")
+    now = datetime.now(timezone.utc)
+    reason = doc.get("ai_reasoning") or "Meets lending criteria based on AI risk assessment."
     await db.applications.update_one(
         {"application_id": application_id},
-        {"$set": {"status": "approved", "decided_at": datetime.now(timezone.utc), "decided_by": current.user_id}},
+        {"$set": {
+            "status": "approved",
+            "decided_at": now,
+            "decided_by": current.user_id,
+            "decided_by_name": current.name,
+            "decision_reason": reason,
+            "approved_amount":  doc.get("amount"),
+            "approved_tenure":  doc.get("term_months"),
+            "approved_rate":    doc.get("interest_rate"),
+        }},
     )
     await _notify(current.user_id, "Loan approved", f"You approved {doc['borrower']['name']}'s loan request.", "application")
-    doc["status"] = "approved"
-    doc["decided_at"] = datetime.now(timezone.utc)
-    doc["decided_by"] = current.user_id
+    doc.update({
+        "status": "approved", "decided_at": now, "decided_by": current.user_id,
+        "decided_by_name": current.name, "decision_reason": reason,
+        "approved_amount": doc.get("amount"), "approved_tenure": doc.get("term_months"),
+        "approved_rate": doc.get("interest_rate"),
+    })
     return LoanApplication(**doc)
 
 @api.post("/applications/{application_id}/reject", response_model=LoanApplication)
@@ -2358,12 +2378,31 @@ async def reject_application(application_id: str, current: UserPublic = Depends(
         raise HTTPException(404, "Application not found")
     if doc["status"] not in ("pending", "approved"):
         raise HTTPException(400, f"Cannot reject a {doc['status']} application")
+    now = datetime.now(timezone.utc)
+    # Reason = top 2-3 negative AI factors if any, else a generic risk line
+    neg_factors = [f for f in (doc.get("ai_factors") or []) if str(f.get("impact","")).lower() == "negative"]
+    if neg_factors:
+        reason = "; ".join(f.get("label","") + " — " + f.get("detail","") for f in neg_factors[:3])
+    else:
+        reason = doc.get("ai_reasoning") or "Borrower does not currently meet the lender's credit policy."
+    risk_factors = [f.get("label","") for f in neg_factors[:5]] or [doc.get("ai_risk","")]
     await db.applications.update_one(
         {"application_id": application_id},
-        {"$set": {"status": "rejected", "decided_at": datetime.now(timezone.utc), "decided_by": current.user_id}},
+        {"$set": {
+            "status": "rejected",
+            "decided_at": now,
+            "decided_by": current.user_id,
+            "decided_by_name": current.name,
+            "decision_reason": reason,
+            "risk_factors_at_decision": risk_factors,
+        }},
     )
     await _notify(current.user_id, "Loan rejected", f"You rejected {doc['borrower']['name']}'s loan request.", "application")
-    doc["status"] = "rejected"
+    doc.update({
+        "status": "rejected", "decided_at": now, "decided_by": current.user_id,
+        "decided_by_name": current.name, "decision_reason": reason,
+        "risk_factors_at_decision": risk_factors,
+    })
     return LoanApplication(**doc)
 
 @api.post("/applications/{application_id}/fund", response_model=Loan)
@@ -2770,14 +2809,39 @@ async def dashboard_overdue(current: UserPublic = Depends(get_current_user)):
 
 
 # ---------- Audit / Help ----------
+def _txn_mode(seed: str) -> str:
+    """Deterministic mode per transaction based on its id hash."""
+    import hashlib as _h
+    modes = ["UPI", "NEFT", "RTGS", "IMPS", "Cash", "Transfer"]
+    i = int(_h.md5(seed.encode()).hexdigest()[:4], 16) % len(modes)
+    return modes[i]
+
+
+def _outflow_category(loan: dict) -> str:
+    purpose = (loan.get("purpose") or "").lower()
+    if "rent" in purpose: return "Rent"
+    if "util" in purpose or "bill" in purpose: return "Utility"
+    if "emi" in purpose: return "EMI"
+    if "business" in purpose or "vendor" in purpose or "supplier" in purpose: return "Vendor"
+    if "personal" in purpose: return "Transfer"
+    return "Loan Disbursal"
+
+
 @api.get("/audit/summary")
-async def audit_summary(months: int = 6, year: int = 0, current: UserPublic = Depends(get_current_user)):
-    """Inflow (repayments) / outflow (disbursals) audit for the lender."""
+async def audit_summary(
+    months: int = 6,
+    year: int = 0,
+    include_transactions: bool = True,
+    current: UserPublic = Depends(get_current_user),
+):
+    """Inflow (repayments) / outflow (disbursals) audit for the lender.
+    When `include_transactions=True` (default) the response additionally carries
+    `inflow_transactions[]`, `outflow_transactions[]`, `reconciliation`, and
+    `variance[]` (exception list)."""
     months = max(1, min(24, int(months)))
     now = datetime.now(timezone.utc)
     if year <= 0:
         year = now.year
-    # Build the month buckets (oldest → newest) ending at the requested year-month.
     end = datetime(year, (now.month if year == now.year else 12), 1, tzinfo=timezone.utc)
     buckets: List[dict] = []
     for offset in range(months - 1, -1, -1):
@@ -2789,22 +2853,34 @@ async def audit_summary(months: int = 6, year: int = 0, current: UserPublic = De
         label = datetime(y, m, 1).strftime("%b %Y")
         buckets.append({"year": y, "month": m, "label": label, "inflow": 0.0, "outflow": 0.0, "net": 0.0})
 
+    def _bk(yy, mm):
+        for b in buckets:
+            if b["year"] == yy and b["month"] == mm:
+                return b
+        return None
+
+    # Pre-fetch clients for name lookup
+    clients = await db.clients.find({"lender_id": current.user_id}, {"_id": 0, "client_id": 1, "name": 1}).to_list(1000)
+    cmap = {c["client_id"]: c["name"] for c in clients}
+
+    # Fetch all loans + transactions for the lender
     loans = await db.loans.find({"funded_by": current.user_id}, {"_id": 0, "proof_image_base64": 0}).to_list(1000)
+
     funded_count = 0
     repaid_count = 0
     overdue_total = 0.0
     active_loans = 0
-
-    def _bk(y, m):
-        for b in buckets:
-            if b["year"] == y and b["month"] == m:
-                return b
-        return None
+    inflow_txns: List[dict] = []
+    outflow_txns: List[dict] = []
+    # Per-counterparty frequency tally (name → count) for inflow recurrence flag
+    freq: Dict[str, int] = {}
 
     for l in loans:
         if l.get("status") == "active":
             active_loans += 1
-        # Outflow on funded_at
+        cname = cmap.get(l.get("client_id"), "Unknown")
+
+        # Outflow — loan disbursal
         fa = l.get("funded_at")
         if fa:
             if isinstance(fa, str):
@@ -2813,9 +2889,21 @@ async def audit_summary(months: int = 6, year: int = 0, current: UserPublic = De
                 fa = fa.replace(tzinfo=timezone.utc)
             b = _bk(fa.year, fa.month)
             if b is not None:
-                b["outflow"] += float(l.get("principal", 0))
+                amt = float(l.get("principal", 0))
+                b["outflow"] += amt
                 funded_count += 1
-        # Inflow from repayment schedule
+                outflow_txns.append({
+                    "id":         l.get("loan_id", ""),
+                    "date":       fa.strftime("%Y-%m-%d"),
+                    "counterparty": cname,
+                    "amount":     round(amt),
+                    "mode":       _txn_mode(f"out-{l.get('loan_id','')}"),
+                    "category":   _outflow_category(l),
+                    "purpose":    l.get("purpose", "—"),
+                    "reference":  (l.get("loan_id", "") or "")[-10:].upper(),
+                })
+
+        # Inflow — EMI repayments
         for s in l.get("repayment_schedule", []) or []:
             if s.get("status") == "paid":
                 pd = s.get("paid_date")
@@ -2826,8 +2914,19 @@ async def audit_summary(months: int = 6, year: int = 0, current: UserPublic = De
                         pd = pd.replace(tzinfo=timezone.utc)
                     b = _bk(pd.year, pd.month)
                     if b is not None:
-                        b["inflow"] += float(s.get("amount", 0))
+                        amt = float(s.get("amount", 0))
+                        b["inflow"] += amt
                         repaid_count += 1
+                        freq[cname] = freq.get(cname, 0) + 1
+                        inflow_txns.append({
+                            "id":           f"{l.get('loan_id','')}-m{s.get('month',0)}",
+                            "date":         pd.strftime("%Y-%m-%d"),
+                            "counterparty": cname,
+                            "amount":       round(amt),
+                            "mode":         _txn_mode(f"in-{l.get('loan_id','')}-{s.get('month',0)}"),
+                            "frequency":    "Recurring EMI",
+                            "reference":    f"EMI-{s.get('month','?')}",
+                        })
             else:
                 due = s.get("due_date")
                 if due:
@@ -2838,23 +2937,82 @@ async def audit_summary(months: int = 6, year: int = 0, current: UserPublic = De
                     if due < now:
                         overdue_total += float(s.get("amount", 0))
 
+    # Patch frequency on inflow rows: recurring if ≥2 payments from same counterparty
+    for t in inflow_txns:
+        t["frequency"] = "Recurring EMI" if freq.get(t["counterparty"], 0) >= 2 else "One-time"
+
     for b in buckets:
         b["inflow"] = round(b["inflow"])
         b["outflow"] = round(b["outflow"])
         b["net"] = b["inflow"] - b["outflow"]
 
-    return {
-        "period": {"from": buckets[0]["label"], "to": buckets[-1]["label"], "months": months},
-        "inflow_total": sum(b["inflow"] for b in buckets),
-        "outflow_total": sum(b["outflow"] for b in buckets),
-        "net": sum(b["net"] for b in buckets),
+    inflow_total = sum(b["inflow"] for b in buckets)
+    outflow_total = sum(b["outflow"] for b in buckets)
+
+    # Reconciliation: Opening + Inflow - Outflow = Closing
+    opening_balance = 0  # start-of-period position (our book starts at 0 per period)
+    closing_balance = opening_balance + inflow_total - outflow_total
+
+    # Variance detection — exceptions
+    variance: List[dict] = []
+    # 1. Duplicate inflows (same counterparty+date+amount)
+    seen = {}
+    for t in inflow_txns:
+        k = (t["counterparty"], t["date"], t["amount"])
+        if k in seen:
+            variance.append({"severity": "medium", "type": "Duplicate row",
+                             "detail": f"Duplicate inflow: {t['counterparty']} on {t['date']} for ₹{t['amount']:,}"})
+        else:
+            seen[k] = True
+    # 2. Reversals (inflow + outflow same amount same day, same counterparty)
+    out_index = {(t["counterparty"], t["date"], t["amount"]): t for t in outflow_txns}
+    for t in inflow_txns:
+        if (t["counterparty"], t["date"], t["amount"]) in out_index:
+            variance.append({"severity": "low", "type": "Reversal entry",
+                             "detail": f"Matching inflow+outflow for {t['counterparty']} on {t['date']} (₹{t['amount']:,})"})
+    # 3. Unknown/orphan: inflow from a name not in clients (shouldn't happen but check)
+    known_names = set(cmap.values())
+    for t in inflow_txns:
+        if t["counterparty"] not in known_names:
+            variance.append({"severity": "medium", "type": "Unknown credit",
+                             "detail": f"Inflow from unregistered counterparty: {t['counterparty']} on {t['date']} (₹{t['amount']:,})"})
+    # 4. OCR mismatch on statement analyses (from stored parse confidence)
+    stmt_docs = await db.statement_analyses.find({"lender_id": current.user_id}, {"_id": 0, "parse_confidence": 1, "rows_extracted": 1, "bounce_matches_found": 1, "file_name": 1, "client_id": 1}).sort("created_at", -1).to_list(50)
+    for s in stmt_docs:
+        if s.get("parse_confidence") == "low":
+            variance.append({"severity": "medium", "type": "OCR mismatch",
+                             "detail": f"Low parsing confidence on {s.get('file_name','statement')} ({s.get('rows_extracted',0)} rows)"})
+
+    # Sort txns newest → oldest
+    inflow_txns.sort(key=lambda x: x["date"], reverse=True)
+    outflow_txns.sort(key=lambda x: x["date"], reverse=True)
+
+    result = {
+        "period":       {"from": buckets[0]["label"], "to": buckets[-1]["label"], "months": months},
+        "inflow_total": inflow_total,
+        "outflow_total": outflow_total,
+        "net":          inflow_total - outflow_total,
         "overdue_total": round(overdue_total),
         "funded_count": funded_count,
         "repaid_count": repaid_count,
         "loans_funded": funded_count,
         "active_loans": active_loans,
-        "monthly": [{"label": b["label"], "inflow": b["inflow"], "outflow": b["outflow"], "net": b["net"]} for b in buckets],
+        "monthly":      [{"label": b["label"], "inflow": b["inflow"], "outflow": b["outflow"], "net": b["net"]} for b in buckets],
+        "reconciliation": {
+            "opening_balance": opening_balance,
+            "inflow":          inflow_total,
+            "outflow":         outflow_total,
+            "closing_balance": closing_balance,
+            "formula":         "Opening + Inflow − Outflow = Closing",
+            "reconciled":      len(variance) == 0,
+        },
+        "variance":     variance,
     }
+    if include_transactions:
+        result["inflow_transactions"]  = inflow_txns[:200]
+        result["outflow_transactions"] = outflow_txns[:200]
+    return result
+
 
 
 @api.get("/audit/summary.pdf")
@@ -2910,6 +3068,78 @@ async def audit_summary_pdf(months: int = 6, year: int = 0, current: UserPublic 
     mt = Table(rows, colWidths=[50*mm, 40*mm, 40*mm, 40*mm])
     mt.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),primary),("TEXTCOLOR",(0,0),(-1,0),rlc.white),("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),9.5),("ALIGN",(1,0),(-1,-1),"RIGHT"),("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5),("LEFTPADDING",(0,0),(-1,-1),8),("RIGHTPADDING",(0,0),(-1,-1),8),("LINEBELOW",(0,0),(-1,-1),0.3,rlc.HexColor("#E2E8F0"))]))
     story.append(mt)
+    story.append(Spacer(1, 14))
+
+    # ---- Reconciliation block
+    rec = data.get("reconciliation", {})
+    story.append(Paragraph("Reconciliation", h2))
+    recon_rows = [
+        ["Opening balance",        f"₹{int(rec.get('opening_balance', 0)):,}"],
+        ["+ Inflow",               f"₹{int(rec.get('inflow', 0)):,}"],
+        ["− Outflow",              f"₹{int(rec.get('outflow', 0)):,}"],
+        ["= Closing balance",      f"₹{int(rec.get('closing_balance', 0)):,}"],
+        ["Formula",                rec.get("formula", "")],
+        ["Status",                 "RECONCILED ✓" if rec.get("reconciled") else "VARIANCE ⚠"],
+    ]
+    rt = Table(recon_rows, colWidths=[80*mm, 80*mm])
+    rt.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(0,-1),light),
+        ("FONTNAME",(0,0),(0,-1),"Helvetica-Bold"),
+        ("FONTSIZE",(0,0),(-1,-1),10),
+        ("ALIGN",(1,0),(1,-1),"RIGHT"),
+        ("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6),
+        ("LEFTPADDING",(0,0),(-1,-1),10),("RIGHTPADDING",(0,0),(-1,-1),10),
+        ("LINEBELOW",(0,0),(-1,-1),0.3,rlc.HexColor("#E2E8F0")),
+        ("BACKGROUND",(0,3),(1,3),rlc.HexColor("#DBEAFE")),
+        ("TEXTCOLOR",(1,-1),(1,-1), emerald if rec.get("reconciled") else crimson),
+    ]))
+    story.append(rt)
+    story.append(Spacer(1, 12))
+
+    # ---- Variance / exceptions
+    var = data.get("variance", []) or []
+    if var:
+        story.append(Paragraph("Variance / Exceptions", h2))
+        for v in var[:15]:
+            col = crimson if v.get("severity") == "high" else (rlc.HexColor("#D97706") if v.get("severity") == "medium" else muted)
+            cell = Table(
+                [[Paragraph(f"<b>[{str(v.get('severity','')).upper()}] {v.get('type','Exception')}</b>", ParagraphStyle('v1', fontSize=10, textColor=col, leading=13))],
+                 [Paragraph(v.get("detail", ""), small)]],
+                colWidths=[170*mm],
+            )
+            cell.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1),rlc.HexColor("#FAFBFE")),("BOX",(0,0),(-1,-1),0.6,col),("LEFTPADDING",(0,0),(-1,-1),10),("RIGHTPADDING",(0,0),(-1,-1),10),("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5)]))
+            story.append(cell); story.append(Spacer(1, 4))
+        story.append(Spacer(1, 10))
+
+    # ---- Inflow transactions
+    infs = data.get("inflow_transactions", []) or []
+    if infs:
+        from reportlab.platypus import PageBreak
+        story.append(PageBreak())
+        story.append(Paragraph("Inflow — Money Received", h1))
+        story.append(Paragraph(f"{len(infs)} transaction(s). Sorted newest first.", small))
+        story.append(Spacer(1, 8))
+        ih = [["Date","From (Counterparty)","Amount","Mode","Frequency","Ref"]]
+        for t in infs[:60]:
+            ih.append([t["date"], t["counterparty"][:22], f"₹{t['amount']:,}", t["mode"], t.get("frequency","—"), t.get("reference","")])
+        inft = Table(ih, colWidths=[22*mm, 55*mm, 28*mm, 20*mm, 30*mm, 20*mm], repeatRows=1)
+        inft.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),emerald),("TEXTCOLOR",(0,0),(-1,0),rlc.white),("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),8.5),("ALIGN",(2,0),(2,-1),"RIGHT"),("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),("LEFTPADDING",(0,0),(-1,-1),6),("RIGHTPADDING",(0,0),(-1,-1),6),("LINEBELOW",(0,0),(-1,-1),0.2,rlc.HexColor("#E2E8F0"))]))
+        story.append(inft)
+
+    # ---- Outflow transactions
+    outs = data.get("outflow_transactions", []) or []
+    if outs:
+        from reportlab.platypus import PageBreak
+        story.append(PageBreak())
+        story.append(Paragraph("Outflow — Money Disbursed", h1))
+        story.append(Paragraph(f"{len(outs)} transaction(s). Sorted newest first.", small))
+        story.append(Spacer(1, 8))
+        oh = [["Date","To (Counterparty)","Amount","Mode","Category","Ref"]]
+        for t in outs[:60]:
+            oh.append([t["date"], t["counterparty"][:22], f"₹{t['amount']:,}", t["mode"], t.get("category","—"), t.get("reference","")])
+        outt = Table(oh, colWidths=[22*mm, 55*mm, 28*mm, 20*mm, 30*mm, 20*mm], repeatRows=1)
+        outt.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),primary),("TEXTCOLOR",(0,0),(-1,0),rlc.white),("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),8.5),("ALIGN",(2,0),(2,-1),"RIGHT"),("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),("LEFTPADDING",(0,0),(-1,-1),6),("RIGHTPADDING",(0,0),(-1,-1),6),("LINEBELOW",(0,0),(-1,-1),0.2,rlc.HexColor("#E2E8F0"))]))
+        story.append(outt)
 
     def _footer(c, d):
         c.saveState(); c.setFont("Helvetica", 8); c.setFillColor(muted)

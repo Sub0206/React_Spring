@@ -5,11 +5,21 @@ import { Colors } from "../../src/theme";
 import { Platform, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useI18n } from "../../src/i18n";
+import { CoachmarksProvider } from "../../src/coachmarks";
 
 export default function TabsLayout() {
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const { t } = useI18n();
+
+  return (
+    <CoachmarksProvider>
+      <InnerTabs t={t} insets={insets} width={width} />
+    </CoachmarksProvider>
+  );
+}
+
+function InnerTabs({ t, insets, width }: { t: (k: string) => string; insets: any; width: number }) {
 
   // Responsive labels
   const showLabels = width >= 360;

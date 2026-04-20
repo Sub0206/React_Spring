@@ -18,6 +18,9 @@ type App = {
   amount: number; purpose: string; term_months: number; interest_rate: number;
   status: string;
   created_at?: string; requested_at?: string;
+  decided_at?: string; decided_by?: string; decided_by_name?: string; decision_reason?: string;
+  approved_amount?: number; approved_tenure?: number; approved_rate?: number;
+  risk_factors_at_decision?: string[];
   ai_score?: number; ai_risk?: string; ai_recommendation?: string; ai_reasoning?: string;
   ai_factors?: { label: string; impact: string; detail: string }[];
 };
@@ -136,6 +139,48 @@ export default function ApplicationDetail() {
             <Badge label={app.status.toUpperCase()} color={app.status === "pending" ? Colors.secondary : app.status === "funded" ? Colors.success : Colors.primary} />
           </View>
         </View>
+
+        {/* ==== Decision Audit Stamp (read-only, shown once a decision has been made) ==== */}
+        {(app.status === "approved" || app.status === "rejected" || app.status === "funded") && app.decided_at && (
+          <View style={[styles.stampCard, { borderColor: app.status === "rejected" ? Colors.danger : Colors.success }]}>
+            <View style={styles.stampHead}>
+              <Ionicons
+                name={app.status === "rejected" ? "close-circle" : "checkmark-circle"}
+                size={18}
+                color={app.status === "rejected" ? Colors.danger : Colors.success}
+              />
+              <Text style={[styles.stampTitle, { color: app.status === "rejected" ? Colors.danger : Colors.success }]}>
+                {app.status === "rejected" ? "Loan Rejected" : (app.status === "funded" ? "Loan Funded" : "Loan Approved")}
+              </Text>
+              <Text style={styles.stampTs}>{new Date(app.decided_at).toLocaleString()}</Text>
+            </View>
+            <View style={styles.stampGrid}>
+              <KVItem k="Decision by" v={app.decided_by_name || "Lender"} />
+              <KVItem k="Decision date" v={new Date(app.decided_at).toLocaleDateString()} />
+              {app.status !== "rejected" ? (
+                <>
+                  <KVItem k="Approved amount" v={`₹${(app.approved_amount ?? app.amount).toLocaleString("en-IN")}`} color={Colors.success} />
+                  <KVItem k="Tenure" v={`${app.approved_tenure ?? app.term_months} months`} />
+                  <KVItem k="Interest rate" v={`${app.approved_rate ?? app.interest_rate}% p.a.`} />
+                </>
+              ) : null}
+            </View>
+            {app.decision_reason && (
+              <View style={styles.stampReason}>
+                <Text style={styles.stampReasonLbl}>{app.status === "rejected" ? "Rejection reason" : "Approval reason"}</Text>
+                <Text style={styles.stampReasonTxt}>{app.decision_reason}</Text>
+              </View>
+            )}
+            {app.status === "rejected" && app.risk_factors_at_decision && app.risk_factors_at_decision.length > 0 && (
+              <View style={styles.stampReason}>
+                <Text style={styles.stampReasonLbl}>Key risk factors at decision</Text>
+                {app.risk_factors_at_decision.map((r, i) => (
+                  <Text key={i} style={styles.stampRisk}>• {r}</Text>
+                ))}
+              </View>
+            )}
+          </View>
+        )}
 
         {/* Premium loan summary */}
         <View style={styles.summaryCard}>
@@ -394,6 +439,19 @@ const styles = StyleSheet.create({
   kvKey: { fontSize: 11, color: Colors.textMuted, fontWeight: "700", letterSpacing: 0.4 },
   kvVal: { fontSize: 14, fontWeight: "800", color: Colors.textPrimary, marginTop: 3 },
   cachedSummary: { fontSize: 12, color: Colors.textSecondary, lineHeight: 17 },
+
+  stampCard: {
+    backgroundColor: Colors.surface, borderRadius: Radii.xl, padding: Spacing.lg,
+    marginBottom: Spacing.md, borderWidth: 2, ...Shadows.card,
+  },
+  stampHead: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
+  stampTitle: { flex: 1, fontSize: 15, fontWeight: "800", letterSpacing: 0.3 },
+  stampTs: { fontSize: 11, color: Colors.textMuted, fontWeight: "600" },
+  stampGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  stampReason: { marginTop: Spacing.md, paddingTop: Spacing.md, borderTopWidth: 1, borderTopColor: Colors.borderLight },
+  stampReasonLbl: { fontSize: 11, color: Colors.textMuted, fontWeight: "800", letterSpacing: 0.5 },
+  stampReasonTxt: { fontSize: 13, color: Colors.textPrimary, marginTop: 4, lineHeight: 19 },
+  stampRisk: { fontSize: 12, color: Colors.textSecondary, marginTop: 4 },
   name: { fontSize: 22, fontWeight: "800", color: Colors.textPrimary },
   meta: { color: Colors.textSecondary, fontSize: 14, marginTop: 2 },
   label: { fontSize: 11, color: Colors.textMuted, fontWeight: "700", letterSpacing: 0.5 },

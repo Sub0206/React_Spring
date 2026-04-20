@@ -14,19 +14,6 @@ function AuthGate() {
   const { user, loading, googleExchange } = useAuth();
   const segments = useSegments();
   const router = useRouter();
-  const [onboarded, setOnboarded] = useState<boolean | null>(null);
-
-  // First-run onboarding check
-  useEffect(() => {
-    (async () => {
-      try {
-        const v = await AsyncStorage.getItem("lendiq_onboarded");
-        setOnboarded(v === "1");
-      } catch {
-        setOnboarded(true);
-      }
-    })();
-  }, []);
 
   // Handle Emergent Google auth return with #session_id= in URL hash (web preview)
   useEffect(() => {
@@ -56,19 +43,17 @@ function AuthGate() {
   }, []);
 
   useEffect(() => {
-    if (loading || onboarded === null) return;
+    if (loading) return;
     const inAuth = segments[0] === undefined || segments[0] === "index";
     const onOnboarding = segments[0] === "onboarding";
-    if (!onboarded && !onOnboarding) {
-      router.replace("/onboarding" as any);
-    } else if (onboarded && !user && !inAuth) {
+    if (!user && !inAuth && !onOnboarding) {
       router.replace("/");
-    } else if (onboarded && user && (inAuth || onOnboarding)) {
+    } else if (user && (inAuth || onOnboarding)) {
       router.replace("/(tabs)/dashboard");
     }
-  }, [user, loading, segments, onboarded]);
+  }, [user, loading, segments]);
 
-  if (loading || onboarded === null) {
+  if (loading) {
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: Colors.bg }}>
         <ActivityIndicator size="large" color={Colors.primary} />
