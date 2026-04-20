@@ -278,10 +278,10 @@ frontend:
 
 backend:
   - task: "Enriched statement analyzer (iteration 11)"
-    implemented: false
+    implemented: true
     working: false
     file: "/app/backend/server.py"
-    stuck_count: 1
+    stuck_count: 2
     priority: "high"
     needs_retesting: true
     status_history:
@@ -289,44 +289,63 @@ backend:
         agent: "testing"
         comment: |
           Iteration-11 FAIL on live backend (lender 9876543210).
+          (A) PATH MISSING: POST /api/clients/{client_id}/analyze-statement → 404.
+          (B) /api/loan-apps/analyze-statement LLM path returned OLD 13-field shape
+              (17 required fields missing + chart.net missing).
+          (C) Regressions PASS (dashboard/portfolio_health, reschedule, undo-pay).
+      - working: false
+        agent: "testing"
+        comment: |
+          Iteration-11 RE-TEST (after main-agent fix).
+          Live backend at https://lending-hub-63.preview.emergentagent.com, lender
+          9876543210, seeded client cli_seed_000.
 
-          (A) PATH MISSING: POST /api/clients/{client_id}/analyze-statement does NOT exist
-              → returns 405/404. Only /api/loan-apps/analyze-statement exists (body-based
-              client_id). The reviewer explicitly asked for the RESTful sub-resource path.
+          RESULT: 1/2 endpoints PASS.
 
-          (B) ENRICHED SCHEMA NOT RETURNED by the existing /api/loan-apps/analyze-statement
-              endpoint. The primary (LLM) path in server.py:877-926 still uses the OLD
-              prompt schema (lines 894-915) which only asks the model for:
-                months_analyzed, total_credit, total_debit, avg_balance,
-                bounced_transactions, salary_credits_detected, bounce_risk, risk_color,
-                chart[{label,credit,debit,bounces}], summary, highlights
-              The enriched premium fields were added ONLY inside _fallback_statement_analysis
-              (lines 757-875) — they are never produced by the LLM path. Since the LLM
-              returned successfully, the caller gets the OLD shape.
+          [FAIL] TEST 1 — POST /api/clients/cli_seed_000/analyze-statement (body={})
+              HTTP 500 Internal Server Error.
+              ROOT CAUSE (server.py:951):
+                  payload = StatementAnalysisRequest(
+                            ^^^^^^^^^^^^^^^^^^^^^^^^
+                  NameError: name 'StatementAnalysisRequest' is not defined
+              The correct class name is `AnalyzeStatementRequest` (defined at line 104).
+              Main-agent typo in the new `analyze_statement_by_path` handler — the
+              endpoint is registered but crashes on every invocation.
+              Backend log (/var/log/supervisor/backend.err.log):
+                  File "/app/backend/server.py", line 951, in analyze_statement_by_path
+                      payload = StatementAnalysisRequest(
+                  NameError: name 'StatementAnalysisRequest' is not defined
 
-              MISSING keys vs review spec (30 required → 13 present, 17 missing):
-                bank_detected, account_holder, account_number_masked, statement_period,
-                opening_balance, closing_balance, avg_monthly_credit, avg_monthly_debit,
-                highest_balance, emi_load_pct, loan_eligibility, recommended_decision,
-                suggested_loan_amount, suggested_emi, repayment_capacity_pct,
-                balance_trend, categories, red_flags, behaviour, fraud_checks
+          [PASS] TEST 2 — POST /api/loan-apps/analyze-statement (legacy body endpoint)
+              HTTP 200. All 30 required top-level fields present with correct types.
+              Verified: months_analyzed (int), bank_detected, account_holder,
+              account_number_masked, statement_period (str); opening_balance,
+              closing_balance, total_credit, total_debit, avg_monthly_credit,
+              avg_monthly_debit, avg_balance, highest_balance (numbers);
+              bounced_transactions, salary_credits_detected (int); emi_load_pct (num);
+              bounce_risk ∈ {low,medium,high}; risk_color ∈ {green,yellow,red};
+              loan_eligibility ∈ {strong,moderate,weak};
+              recommended_decision ∈ {approve,approve_with_caution,manual_review,reject};
+              suggested_loan_amount, suggested_emi, repayment_capacity_pct (numbers);
+              chart[] each has {label,credit,debit,net,bounces};
+              balance_trend[] each has {label,value};
+              categories[] each has {name,count,amount,share_pct,type};
+              red_flags[] each has {severity,title,detail};
+              behaviour {salary_consistency, spending_discipline, cash_dependence_pct,
+                  unusual_spikes, frequent_transfers, risky_merchants};
+              fraud_checks {edited_statement_likelihood, missing_pages_detected,
+                  duplicate_txn_count, page_count, rotated_pages_fixed,
+                  ocr_confidence_pct};
+              summary (str), highlights (list[str]).
+              The backend now merges enriched fallback as default and overlays LLM
+              output — this works correctly.
 
-              Also chart entries are missing the required `net` field (contain only
-              label/credit/debit/bounces — not net).
+          FIX REQUIRED (main agent, 1-character typo):
+              At server.py:951, change `StatementAnalysisRequest(` to
+              `AnalyzeStatementRequest(`. That is the only blocker for the NEW
+              path-based endpoint; the schema logic is otherwise correct.
 
-          (C) Regressions all PASS:
-              - GET /api/dashboard → portfolio_health={on_track:3, overdue:6, at_risk:5,
-                completed:3, defaulted:1} (all 5 int keys present) ✓
-              - POST /api/loans/{id}/reschedule/{month}?new_due_date=2028-03-15T12:00:00Z → 200 ✓
-              - POST /api/loans/{id}/undo-pay/{month} → 200 ✓
-
-          FIX REQUIRED (main agent):
-            1. Either add a new endpoint `POST /api/clients/{client_id}/analyze-statement`
-               (preferred per reviewer) OR confirm reviewer accepts existing path — AND
-            2. Update the LLM prompt in analyze_statement() to request ALL 30 enriched
-               fields including balance_trend, categories, red_flags, behaviour,
-               fraud_checks, and `net` inside chart entries, OR short-circuit to
-               _fallback_statement_analysis() (which already has the complete schema).
+          Test script: /app/backend_test.py. No backend code modified.
 
 metadata:
   created_by: "main_agent"
@@ -341,6 +360,31 @@ test_plan:
   test_priority: "high_first"
 
 agent_communication:
+  - agent: "testing"
+    message: |
+      Iteration-11 RE-TEST — 1/2 PASS.
+
+      [FAIL] POST /api/clients/cli_seed_000/analyze-statement → HTTP 500.
+        NameError at /app/backend/server.py:951 —
+        `payload = StatementAnalysisRequest(...)` but the class is named
+        `AnalyzeStatementRequest` (defined at line 104). One-character typo in
+        the new path-based handler. Fix: rename to `AnalyzeStatementRequest`.
+        The endpoint registration, path-param extraction and delegation logic
+        are otherwise correct — the same body-based handler it wraps works fine.
+
+      [PASS] POST /api/loan-apps/analyze-statement → HTTP 200, all 30 enriched
+        top-level fields present & correctly typed. chart[] has net; behaviour
+        and fraud_checks have all sub-keys; categories/red_flags/balance_trend
+        shapes validated. The "fallback-first, LLM overlay" pattern in
+        analyze_statement() (server.py:917-926) successfully guarantees the
+        enriched schema regardless of LLM output — this is the right approach.
+
+      Backend log confirms:
+        File "/app/backend/server.py", line 951, in analyze_statement_by_path
+            payload = StatementAnalysisRequest(
+        NameError: name 'StatementAnalysisRequest' is not defined
+
+      Test script: /app/backend_test.py. No backend code modified.
   - agent: "main"
     message: |
       Iteration 6 (critical UX fixes) validated with testing agent:

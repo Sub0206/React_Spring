@@ -913,24 +913,48 @@ Realism rules: if bounced_transactions == 0 and avg_balance >= 80000 → risk lo
 If 1-2 bounces → medium/yellow. If 3+ bounces or avg_balance < 20000 → high/red.
 Use realistic Indian-salary ranges (₹25k-₹1.5L inflow/month).
 """
+    # Always start from enriched fallback so ALL 30+ premium fields are guaranteed;
+    # LLM output (if any) is merged on top to enhance realism where possible.
+    fb = _fallback_statement_analysis(client, months)
     try:
         parsed = await _llm_json(system, user_prompt, f"stmt-{body.client_id}-{uuid.uuid4().hex[:6]}")
-        # Save analysis
-        analysis_id = f"ana_{uuid.uuid4().hex[:10]}"
-        parsed["analysis_id"] = analysis_id
-        parsed["client_id"] = body.client_id
-        parsed["file_name"] = body.file_name
-        parsed["created_at"] = datetime.now(timezone.utc).isoformat()
-        await db.statement_analyses.insert_one({**parsed, "lender_id": current.user_id})
-        parsed.pop("_id", None)
-        return parsed
+        if isinstance(parsed, dict):
+            fb.update({k: v for k, v in parsed.items() if v is not None})
+        # Ensure chart entries have `net` field
+        for c in fb.get("chart", []):
+            if "net" not in c:
+                c["net"] = int((c.get("credit") or 0) - (c.get("debit") or 0))
     except Exception:
-        fb = _fallback_statement_analysis(client, months)
-        fb["analysis_id"] = f"ana_{uuid.uuid4().hex[:10]}"
-        fb["client_id"] = body.client_id
-        fb["file_name"] = body.file_name
-        fb["created_at"] = datetime.now(timezone.utc).isoformat()
-        return fb
+        pass
+    analysis_id = f"ana_{uuid.uuid4().hex[:10]}"
+    fb["analysis_id"] = analysis_id
+    fb["client_id"] = body.client_id
+    fb["file_name"] = body.file_name
+    fb["created_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        await db.statement_analyses.insert_one({**fb, "lender_id": current.user_id})
+        fb.pop("_id", None)
+    except Exception:
+        pass
+    return fb
+
+
+@api.post("/clients/{client_id}/analyze-statement")
+async def analyze_statement_by_path(
+    client_id: str,
+    body: dict = None,
+    current: UserPublic = Depends(get_current_user),
+):
+    """RESTful alias for statement analysis using client_id as a path parameter."""
+    from pydantic import parse_obj_as
+    body = body or {}
+    payload = StatementAnalysisRequest(
+        client_id=client_id,
+        file_name=body.get("file_name", "statement.pdf"),
+        file_size=int(body.get("file_size", 0)),
+        months=int(body.get("months", 3)),
+    )
+    return await analyze_statement(payload, current)
 
 @api.post("/loan-apps/check-cibil")
 async def check_cibil(body: CibilRequest, current: UserPublic = Depends(get_current_user)):
