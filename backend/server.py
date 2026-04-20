@@ -41,20 +41,21 @@ logger = logging.getLogger("smart-lending")
 # ---------- Models ----------
 class UserPublic(BaseModel):
     user_id: str
-    email: str
+    mobile: str
     name: str
+    email: Optional[str] = None
     picture: Optional[str] = None
     role: str = "lender"
     created_at: datetime
 
-class RegisterRequest(BaseModel):
-    email: EmailStr
-    password: str
-    name: str
+class SendOtpRequest(BaseModel):
+    mobile: str
+    name: Optional[str] = None
+    purpose: Literal["signup", "login"] = "login"
 
-class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
+class VerifyOtpRequest(BaseModel):
+    mobile: str
+    otp: str
 
 class GoogleAuthRequest(BaseModel):
     session_id: str
@@ -62,6 +63,81 @@ class GoogleAuthRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     user: UserPublic
+
+class ClientModel(BaseModel):
+    client_id: str
+    lender_id: str
+    name: str
+    mobile: str
+    aadhaar_masked: str
+    pan: str
+    aadhaar_verified: bool = False
+    pan_verified: bool = False
+    otp_verified: bool = False
+    avatar: Optional[str] = None
+    created_at: datetime
+
+class ClientModel(BaseModel):
+    client_id: str
+    lender_id: str
+    name: str
+    mobile: str
+    aadhaar_masked: str
+    pan: str
+    aadhaar_name: Optional[str] = None
+    pan_name: Optional[str] = None
+    pan_dob: Optional[str] = None
+    aadhaar_verified: bool = False
+    pan_verified: bool = False
+    otp_verified: bool = False
+    avatar: Optional[str] = None
+    created_at: datetime
+
+class VerifyAadhaarRequest(BaseModel):
+    aadhaar: str
+
+class AadhaarOtpVerifyRequest(BaseModel):
+    verification_id: str
+    otp: str
+
+class VerifyPanRequest(BaseModel):
+    pan: str
+
+class AnalyzeStatementRequest(BaseModel):
+    client_id: str
+    file_name: str
+    file_size: int = 0
+    months: Literal[3, 6, 12] = 6
+
+class CibilRequest(BaseModel):
+    client_id: str
+
+class CreateLoanAppRequest(BaseModel):
+    client_id: str
+    amount: float
+    purpose: str
+    term_months: int
+    interest_rate: float
+    statement_analysis: Optional[dict] = None
+    cibil_report: Optional[dict] = None
+
+class ClientOtpRequest(BaseModel):
+    mobile: str
+
+class ClientVerifyOtpRequest(BaseModel):
+    verification_id: str
+    otp: str
+
+class CreateClientRequest(BaseModel):
+    name: str
+    mobile: str
+    aadhaar: str
+    pan: str
+    verification_id: str
+    aadhaar_verification_id: Optional[str] = None
+    aadhaar_name: Optional[str] = None
+    pan_name: Optional[str] = None
+    pan_dob: Optional[str] = None
 
 class BorrowerProfile(BaseModel):
     name: str
@@ -148,6 +224,80 @@ def create_access_token(user_id: str) -> str:
     }
     return pyjwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
+# --- Indian KYC validators (mock / format-level) ---
+_VERHOEFF_D = [
+    [0,1,2,3,4,5,6,7,8,9],
+    [1,2,3,4,0,6,7,8,9,5],
+    [2,3,4,0,1,7,8,9,5,6],
+    [3,4,0,1,2,8,9,5,6,7],
+    [4,0,1,2,3,9,5,6,7,8],
+    [5,9,8,7,6,0,4,3,2,1],
+    [6,5,9,8,7,1,0,4,3,2],
+    [7,6,5,9,8,2,1,0,4,3],
+    [8,7,6,5,9,3,2,1,0,4],
+    [9,8,7,6,5,4,3,2,1,0],
+]
+_VERHOEFF_P = [
+    [0,1,2,3,4,5,6,7,8,9],
+    [1,5,7,6,2,8,3,0,9,4],
+    [5,8,0,3,7,9,6,1,4,2],
+    [8,9,1,6,0,4,3,5,2,7],
+    [9,4,5,3,1,2,6,8,7,0],
+    [4,2,8,6,5,7,3,9,0,1],
+    [2,7,9,3,8,0,6,4,1,5],
+    [7,0,4,6,9,1,3,2,5,8],
+]
+
+def validate_aadhaar(num: str) -> dict:
+    s = "".join(ch for ch in num if ch.isdigit())
+    if len(s) != 12:
+        return {"valid": False, "reason": "Aadhaar must be exactly 12 digits."}
+    if s[0] in "01":
+        return {"valid": False, "reason": "Aadhaar cannot start with 0 or 1."}
+    c = 0
+    for i, digit in enumerate(reversed(s)):
+        c = _VERHOEFF_D[c][_VERHOEFF_P[i % 8][int(digit)]]
+    if c != 0:
+        return {"valid": False, "reason": "Invalid Aadhaar checksum."}
+    return {"valid": True, "masked": f"XXXX-XXXX-{s[-4:]}"}
+
+import re as _re
+_PAN_REGEX = _re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
+
+def validate_pan(pan: str) -> dict:
+    p = (pan or "").strip().upper()
+    if not _PAN_REGEX.match(p):
+        return {"valid": False, "reason": "PAN must match format AAAAA9999A."}
+    entity = p[3]
+    entity_map = {
+        "P": "Individual", "F": "Firm", "C": "Company", "H": "HUF",
+        "A": "AOP", "T": "Trust", "B": "BOI", "L": "Local authority",
+        "J": "Artificial Juridical", "G": "Government", "E": "LLP",
+    }
+    # Deterministic mock name/DOB from PAN
+    import hashlib
+    h = hashlib.md5(p.encode()).hexdigest()
+    first_names = ["Ravi","Priya","Amit","Neha","Arjun","Divya","Rohit","Sneha","Vikas","Anita","Suresh","Pooja","Karan","Meera","Rahul","Kavya"]
+    last_names = ["Kumar","Sharma","Patel","Singh","Mehta","Gupta","Rao","Iyer","Nair","Reddy","Pillai","Joshi","Bose","Chopra","Banerjee","Malhotra"]
+    fn = first_names[int(h[0:2], 16) % len(first_names)]
+    ln = last_names[int(h[2:4], 16) % len(last_names)]
+    year = 1970 + (int(h[4:6], 16) % 35)
+    month = 1 + (int(h[6:8], 16) % 12)
+    day = 1 + (int(h[8:10], 16) % 28)
+    return {
+        "valid": True,
+        "entity": entity_map.get(entity, "Individual"),
+        "pan": p,
+        "name": f"{fn} {ln}",
+        "dob": f"{day:02d}/{month:02d}/{year}",
+    }
+
+def mask_mobile(m: str) -> str:
+    digits = "".join(ch for ch in m if ch.isdigit())
+    if len(digits) < 6:
+        return m
+    return "X" * (len(digits) - 4) + digits[-4:]
+
 async def get_current_user(authorization: Optional[str] = Header(None)) -> UserPublic:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid auth token")
@@ -180,35 +330,82 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> UserP
     return UserPublic(**user_doc)
 
 # ---------- Auth endpoints ----------
-@api.post("/auth/register", response_model=TokenResponse)
-async def register(body: RegisterRequest):
-    existing = await db.users.find_one({"email": body.email.lower()}, {"_id": 0})
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    user_id = f"user_{uuid.uuid4().hex[:12]}"
-    user_doc = {
-        "user_id": user_id,
-        "email": body.email.lower(),
-        "name": body.name,
-        "picture": None,
-        "role": "lender",
-        "password_hash": hash_password(body.password),
-        "created_at": datetime.now(timezone.utc),
-    }
-    await db.users.insert_one(user_doc)
-    token = create_access_token(user_id)
-    public = {k: v for k, v in user_doc.items() if k != "password_hash"}
-    return TokenResponse(access_token=token, user=UserPublic(**public))
+def _normalize_mobile(m: str) -> str:
+    digits = "".join(ch for ch in (m or "") if ch.isdigit())
+    # Keep last 10 digits for India; still accept others
+    if len(digits) > 10:
+        return digits[-10:]
+    return digits
 
-@api.post("/auth/login", response_model=TokenResponse)
-async def login(body: LoginRequest):
-    user = await db.users.find_one({"email": body.email.lower()}, {"_id": 0})
-    if not user or not user.get("password_hash"):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    if not verify_password(body.password, user["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+def _generate_otp() -> str:
+    import random
+    return f"{random.randint(100000, 999999)}"
+
+@api.post("/auth/send-otp")
+async def auth_send_otp(body: SendOtpRequest):
+    mobile = _normalize_mobile(body.mobile)
+    if len(mobile) != 10:
+        raise HTTPException(400, "Invalid mobile number. Enter 10-digit Indian mobile.")
+    existing = await db.users.find_one({"mobile": mobile}, {"_id": 0})
+    if body.purpose == "login" and not existing:
+        raise HTTPException(404, "No account found. Please sign up first.")
+    if body.purpose == "signup" and existing:
+        raise HTTPException(400, "Mobile already registered. Please sign in.")
+    if body.purpose == "signup" and not (body.name and body.name.strip()):
+        raise HTTPException(400, "Name is required for sign up.")
+    otp = _generate_otp()
+    await db.otps.delete_many({"mobile": mobile, "scope": "auth"})
+    await db.otps.insert_one({
+        "mobile": mobile,
+        "scope": "auth",
+        "otp": otp,
+        "purpose": body.purpose,
+        "name": (body.name or "").strip() or None,
+        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=5),
+        "created_at": datetime.now(timezone.utc),
+    })
+    logger.info(f"[MOCK-OTP] auth OTP for {mobile}: {otp}")
+    # Return OTP in response for demo/mock mode
+    return {"ok": True, "mobile": mobile, "demo_otp": otp, "message": "OTP sent (mock). Valid 5 minutes."}
+
+@api.post("/auth/verify-otp", response_model=TokenResponse)
+async def auth_verify_otp(body: VerifyOtpRequest):
+    mobile = _normalize_mobile(body.mobile)
+    rec = await db.otps.find_one({"mobile": mobile, "scope": "auth"}, {"_id": 0})
+    if not rec:
+        raise HTTPException(400, "OTP not found. Please request again.")
+    expires_at = rec["expires_at"]
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < datetime.now(timezone.utc):
+        raise HTTPException(400, "OTP expired. Please request a new one.")
+    if rec["otp"] != body.otp.strip():
+        raise HTTPException(400, "Invalid OTP.")
+
+    user = await db.users.find_one({"mobile": mobile}, {"_id": 0})
+    if not user:
+        # Signup flow
+        if rec.get("purpose") != "signup":
+            raise HTTPException(404, "No account. Please sign up.")
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        user = {
+            "user_id": user_id,
+            "mobile": mobile,
+            "name": rec.get("name") or f"Lender {mobile[-4:]}",
+            "email": None,
+            "picture": None,
+            "role": "lender",
+            "mobile_verified": True,
+            "created_at": datetime.now(timezone.utc),
+        }
+        await db.users.insert_one(user)
+
+    await db.otps.delete_one({"mobile": mobile, "scope": "auth"})
     token = create_access_token(user["user_id"])
-    public = {k: v for k, v in user.items() if k != "password_hash"}
+    public = {k: v for k, v in user.items() if k not in ("password_hash", "mobile_verified")}
+    public.setdefault("email", None)
     return TokenResponse(access_token=token, user=UserPublic(**public))
 
 @api.post("/auth/google", response_model=TokenResponse)
@@ -236,6 +433,7 @@ async def google_auth(body: GoogleAuthRequest):
         user = {
             "user_id": user_id,
             "email": email,
+            "mobile": "",
             "name": name,
             "picture": picture,
             "role": "lender",
@@ -250,6 +448,7 @@ async def google_auth(body: GoogleAuthRequest):
         )
         user["name"] = name
         user["picture"] = picture
+        user.setdefault("mobile", "")
 
     if session_token:
         await db.user_sessions.update_one(
@@ -270,6 +469,470 @@ async def google_auth(body: GoogleAuthRequest):
 @api.get("/auth/me", response_model=UserPublic)
 async def me(current: UserPublic = Depends(get_current_user)):
     return current
+
+# ---------- Client Management ----------
+@api.post("/clients/verify-aadhaar")
+async def client_verify_aadhaar(body: VerifyAadhaarRequest):
+    res = validate_aadhaar(body.aadhaar)
+    return res
+
+@api.post("/clients/verify-pan")
+async def client_verify_pan(body: VerifyPanRequest):
+    res = validate_pan(body.pan)
+    return res
+
+@api.post("/clients/aadhaar-send-otp")
+async def aadhaar_send_otp(body: VerifyAadhaarRequest, current: UserPublic = Depends(get_current_user)):
+    a = validate_aadhaar(body.aadhaar)
+    if not a["valid"]:
+        raise HTTPException(400, a.get("reason", "Invalid Aadhaar"))
+    otp = _generate_otp()
+    vid = f"av_{uuid.uuid4().hex[:14]}"
+    await db.otps.insert_one({
+        "verification_id": vid,
+        "scope": "aadhaar",
+        "lender_id": current.user_id,
+        "aadhaar_last4": body.aadhaar.strip()[-4:],
+        "aadhaar_full": body.aadhaar.strip(),
+        "otp": otp,
+        "verified": False,
+        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=5),
+        "created_at": datetime.now(timezone.utc),
+    })
+    logger.info(f"[MOCK-OTP] aadhaar OTP for ****{body.aadhaar.strip()[-4:]}: {otp}")
+    return {"verification_id": vid, "masked": a["masked"], "demo_otp": otp}
+
+@api.post("/clients/aadhaar-verify-otp")
+async def aadhaar_verify_otp(body: AadhaarOtpVerifyRequest, current: UserPublic = Depends(get_current_user)):
+    rec = await db.otps.find_one({"verification_id": body.verification_id, "scope": "aadhaar"}, {"_id": 0})
+    if not rec or rec.get("lender_id") != current.user_id:
+        raise HTTPException(400, "Verification session not found")
+    exp = rec["expires_at"]
+    if isinstance(exp, str):
+        exp = datetime.fromisoformat(exp)
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp < datetime.now(timezone.utc):
+        raise HTTPException(400, "Aadhaar OTP expired")
+    if rec["otp"] != body.otp.strip():
+        raise HTTPException(400, "Invalid Aadhaar OTP")
+    # Deterministic mock name from aadhaar
+    import hashlib
+    h = hashlib.md5(rec["aadhaar_full"].encode()).hexdigest()
+    first = ["Ravi","Priya","Amit","Neha","Arjun","Divya","Rohit","Sneha"][int(h[0:2], 16) % 8]
+    last = ["Kumar","Sharma","Patel","Singh","Mehta","Gupta","Rao","Iyer"][int(h[2:4], 16) % 8]
+    name = f"{first} {last}"
+    await db.otps.update_one(
+        {"verification_id": body.verification_id},
+        {"$set": {"verified": True, "aadhaar_name": name, "verified_at": datetime.now(timezone.utc)}},
+    )
+    a_last4 = rec["aadhaar_last4"]
+    return {"verified": True, "name": name, "masked": f"XXXX-XXXX-{a_last4}"}
+
+
+@api.post("/clients/send-otp")
+async def client_send_otp(body: ClientOtpRequest, current: UserPublic = Depends(get_current_user)):
+    mobile = _normalize_mobile(body.mobile)
+    if len(mobile) != 10:
+        raise HTTPException(400, "Enter a valid 10-digit mobile number.")
+    otp = _generate_otp()
+    verification_id = f"vr_{uuid.uuid4().hex[:14]}"
+    await db.otps.insert_one({
+        "verification_id": verification_id,
+        "mobile": mobile,
+        "scope": "client",
+        "lender_id": current.user_id,
+        "otp": otp,
+        "verified": False,
+        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=5),
+        "created_at": datetime.now(timezone.utc),
+    })
+    logger.info(f"[MOCK-OTP] client OTP for {mobile}: {otp}")
+    return {"verification_id": verification_id, "mobile_masked": mask_mobile(mobile), "demo_otp": otp}
+
+@api.post("/clients/verify-otp")
+async def client_verify_otp(body: ClientVerifyOtpRequest, current: UserPublic = Depends(get_current_user)):
+    rec = await db.otps.find_one({"verification_id": body.verification_id, "scope": "client"}, {"_id": 0})
+    if not rec:
+        raise HTTPException(400, "Verification session not found.")
+    if rec.get("lender_id") != current.user_id:
+        raise HTTPException(403, "Not allowed.")
+    expires_at = rec["expires_at"]
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < datetime.now(timezone.utc):
+        raise HTTPException(400, "OTP expired.")
+    if rec["otp"] != body.otp.strip():
+        raise HTTPException(400, "Invalid OTP.")
+    await db.otps.update_one(
+        {"verification_id": body.verification_id},
+        {"$set": {"verified": True, "verified_at": datetime.now(timezone.utc)}},
+    )
+    return {"verified": True, "verification_id": body.verification_id}
+
+@api.post("/clients", response_model=ClientModel)
+async def client_create(body: CreateClientRequest, current: UserPublic = Depends(get_current_user)):
+    # Validate Aadhaar
+    a = validate_aadhaar(body.aadhaar)
+    if not a["valid"]:
+        raise HTTPException(400, a.get("reason", "Invalid Aadhaar"))
+    # Validate PAN
+    p = validate_pan(body.pan)
+    if not p["valid"]:
+        raise HTTPException(400, p.get("reason", "Invalid PAN"))
+    mobile = _normalize_mobile(body.mobile)
+    if len(mobile) != 10:
+        raise HTTPException(400, "Enter a valid 10-digit mobile number.")
+    if not body.name or not body.name.strip():
+        raise HTTPException(400, "Name is required.")
+    # Check OTP verification record
+    vr = await db.otps.find_one({"verification_id": body.verification_id, "scope": "client"}, {"_id": 0})
+    if not vr or not vr.get("verified"):
+        raise HTTPException(400, "Mobile OTP not verified.")
+    if vr.get("lender_id") != current.user_id:
+        raise HTTPException(403, "Verification belongs to another lender.")
+    if _normalize_mobile(vr["mobile"]) != mobile:
+        raise HTTPException(400, "Verified mobile does not match client mobile.")
+    # Dedup check
+    dup = await db.clients.find_one(
+        {"lender_id": current.user_id, "$or": [
+            {"mobile": mobile},
+            {"pan": p["pan"]},
+            {"aadhaar_hash": hash_password(body.aadhaar)} if False else {"aadhaar_last4": body.aadhaar[-4:]},
+        ]},
+        {"_id": 0},
+    )
+    # Simpler: dedup by (lender_id, mobile)
+    dup_mobile = await db.clients.find_one({"lender_id": current.user_id, "mobile": mobile}, {"_id": 0})
+    if dup_mobile:
+        raise HTTPException(400, "A client with this mobile already exists.")
+    dup_pan = await db.clients.find_one({"lender_id": current.user_id, "pan": p["pan"]}, {"_id": 0})
+    if dup_pan:
+        raise HTTPException(400, "A client with this PAN already exists.")
+
+    client_id = f"cli_{uuid.uuid4().hex[:12]}"
+    avatars = [
+        "https://images.unsplash.com/photo-1758600587839-56ba05596c69?w=200&q=80",
+        "https://images.unsplash.com/photo-1765648580808-76d75e4f3833?w=200&q=80",
+        "https://images.unsplash.com/photo-1621808886790-12905b142573?w=200&q=80",
+        "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=200&q=80",
+        "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=200&q=80",
+    ]
+    import random as _r
+    doc = {
+        "client_id": client_id,
+        "lender_id": current.user_id,
+        "name": body.name.strip(),
+        "mobile": mobile,
+        "aadhaar_masked": a["masked"],
+        "aadhaar_last4": body.aadhaar.strip()[-4:],
+        "pan": p["pan"],
+        "aadhaar_name": body.aadhaar_name,
+        "pan_name": body.pan_name or p.get("name"),
+        "pan_dob": body.pan_dob or p.get("dob"),
+        "aadhaar_verified": True,
+        "pan_verified": True,
+        "otp_verified": True,
+        "avatar": _r.choice(avatars),
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.clients.insert_one(doc)
+    await db.otps.delete_one({"verification_id": body.verification_id})
+    # Strip fields not in response model
+    public = {k: v for k, v in doc.items() if k != "aadhaar_last4"}
+    return ClientModel(**public)
+
+@api.get("/clients", response_model=List[ClientModel])
+async def client_list(q: Optional[str] = None, current: UserPublic = Depends(get_current_user)):
+    query = {"lender_id": current.user_id}
+    if q and q.strip():
+        term = q.strip()
+        import re as _re2
+        rx = {"$regex": _re2.escape(term), "$options": "i"}
+        query = {
+            "lender_id": current.user_id,
+            "$or": [
+                {"name": rx},
+                {"mobile": {"$regex": _re2.escape(term)}},
+                {"pan": {"$regex": _re2.escape(term.upper())}},
+                {"aadhaar_masked": {"$regex": _re2.escape(term)}},
+            ],
+        }
+    cursor = db.clients.find(query, {"_id": 0, "aadhaar_last4": 0}).sort("created_at", -1)
+    docs = await cursor.to_list(500)
+    return [ClientModel(**d) for d in docs]
+
+@api.get("/clients/{client_id}", response_model=ClientModel)
+async def client_get(client_id: str, current: UserPublic = Depends(get_current_user)):
+    doc = await db.clients.find_one(
+        {"client_id": client_id, "lender_id": current.user_id},
+        {"_id": 0, "aadhaar_last4": 0},
+    )
+    if not doc:
+        raise HTTPException(404, "Client not found")
+    return ClientModel(**doc)
+
+@api.delete("/clients/{client_id}")
+async def client_delete(client_id: str, current: UserPublic = Depends(get_current_user)):
+    res = await db.clients.delete_one({"client_id": client_id, "lender_id": current.user_id})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Client not found")
+    return {"ok": True}
+
+@api.get("/clients/{client_id}/loans", response_model=List[LoanApplication])
+async def client_loans(client_id: str, current: UserPublic = Depends(get_current_user)):
+    """Return loan applications associated with this client (by client_id)."""
+    client = await db.clients.find_one({"client_id": client_id, "lender_id": current.user_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(404, "Client not found")
+    cursor = db.applications.find({"client_id": client_id, "lender_id": current.user_id}, {"_id": 0}).sort("created_at", -1)
+    docs = await cursor.to_list(100)
+    return [LoanApplication(**d) for d in docs]
+
+# ---------- Loan Analysis (Bank statement + CIBIL) ----------
+async def _llm_json(system: str, user: str, session_id: str) -> dict:
+    """Call Claude and parse JSON response."""
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=session_id,
+            system_message=system,
+        ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+        resp = await chat.send_message(UserMessage(text=user))
+        text = (resp or "").strip()
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1:
+            raise ValueError("no json")
+        return json.loads(text[start:end + 1])
+    except Exception as e:
+        logger.error(f"LLM error: {e}")
+        raise
+
+def _fallback_statement_analysis(client: dict, months: int) -> dict:
+    """Deterministic fallback if LLM fails."""
+    import hashlib, random as _r
+    seed = int(hashlib.md5((client["client_id"] + str(months)).encode()).hexdigest()[:8], 16)
+    rnd = _r.Random(seed)
+    bounces = rnd.randint(0, 5)
+    avg_balance = rnd.randint(15000, 250000)
+    inflow = rnd.randint(30000, 120000)
+    outflow = int(inflow * rnd.uniform(0.55, 0.95))
+    # Risk category
+    if bounces == 0 and avg_balance >= 80000:
+        risk, color = "low", "green"
+    elif bounces <= 2:
+        risk, color = "medium", "yellow"
+    else:
+        risk, color = "high", "red"
+    from datetime import datetime as _dt
+    now = _dt.now(timezone.utc)
+    chart = []
+    for i in range(months - 1, -1, -1):
+        y, m = now.year, now.month - i
+        while m <= 0:
+            m += 12; y -= 1
+        label = _dt(y, m, 1).strftime("%b")
+        inc = int(inflow * rnd.uniform(0.8, 1.2))
+        exp = int(outflow * rnd.uniform(0.8, 1.2))
+        chart.append({"label": label, "credit": inc, "debit": exp, "bounces": rnd.randint(0, bounces)})
+    return {
+        "months_analyzed": months,
+        "total_credit": sum(c["credit"] for c in chart),
+        "total_debit": sum(c["debit"] for c in chart),
+        "avg_balance": avg_balance,
+        "bounced_transactions": bounces,
+        "salary_credits_detected": rnd.randint(max(0, months - 1), months),
+        "bounce_risk": risk,
+        "risk_color": color,
+        "chart": chart,
+        "summary": (
+            f"{months}-month bank statement review detected {bounces} bounced transaction(s), "
+            f"avg balance ₹{avg_balance:,}, and {risk} bounce risk."
+        ),
+        "highlights": [
+            f"{'Consistent' if bounces == 0 else 'Irregular'} salary inflow pattern",
+            f"Average monthly balance ~ ₹{avg_balance:,}",
+            f"{bounces} dishonoured transaction(s) in window",
+            f"Inflow/outflow ratio: {(inflow/max(outflow,1)):.2f}",
+        ],
+    }
+
+@api.post("/loan-apps/analyze-statement")
+async def analyze_statement(body: AnalyzeStatementRequest, current: UserPublic = Depends(get_current_user)):
+    client = await db.clients.find_one({"client_id": body.client_id, "lender_id": current.user_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(404, "Client not found")
+    months = int(body.months)
+    system = (
+        "You are an expert bank-statement analyst for a lending platform. "
+        "Return STRICT JSON. Do not include text outside JSON."
+    )
+    user_prompt = f"""
+Analyze a simulated {months}-month bank statement for this client:
+- Name: {client['name']}
+- Mobile: {client['mobile']}
+- PAN: {client['pan']}
+- Uploaded file: {body.file_name} ({body.file_size} bytes)
+
+Return JSON with EXACT schema:
+{{
+  "months_analyzed": {months},
+  "total_credit": <int rupees>,
+  "total_debit": <int rupees>,
+  "avg_balance": <int rupees>,
+  "bounced_transactions": <int 0-8>,
+  "salary_credits_detected": <int 0-{months}>,
+  "bounce_risk": "<low|medium|high>",
+  "risk_color": "<green|yellow|red>",
+  "chart": [
+    {{"label": "<Jan/Feb/etc>", "credit": <int>, "debit": <int>, "bounces": <int>}},
+    ... exactly {months} items chronological
+  ],
+  "summary": "<2-3 sentence narrative>",
+  "highlights": ["<bullet 1>", "<bullet 2>", "<bullet 3>", "<bullet 4>"]
+}}
+
+Realism rules: if bounced_transactions == 0 and avg_balance >= 80000 → risk low/green.
+If 1-2 bounces → medium/yellow. If 3+ bounces or avg_balance < 20000 → high/red.
+Use realistic Indian-salary ranges (₹25k-₹1.5L inflow/month).
+"""
+    try:
+        parsed = await _llm_json(system, user_prompt, f"stmt-{body.client_id}-{uuid.uuid4().hex[:6]}")
+        # Save analysis
+        analysis_id = f"ana_{uuid.uuid4().hex[:10]}"
+        parsed["analysis_id"] = analysis_id
+        parsed["client_id"] = body.client_id
+        parsed["file_name"] = body.file_name
+        parsed["created_at"] = datetime.now(timezone.utc).isoformat()
+        await db.statement_analyses.insert_one({**parsed, "lender_id": current.user_id})
+        parsed.pop("_id", None)
+        return parsed
+    except Exception:
+        fb = _fallback_statement_analysis(client, months)
+        fb["analysis_id"] = f"ana_{uuid.uuid4().hex[:10]}"
+        fb["client_id"] = body.client_id
+        fb["file_name"] = body.file_name
+        fb["created_at"] = datetime.now(timezone.utc).isoformat()
+        return fb
+
+@api.post("/loan-apps/check-cibil")
+async def check_cibil(body: CibilRequest, current: UserPublic = Depends(get_current_user)):
+    client = await db.clients.find_one({"client_id": body.client_id, "lender_id": current.user_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(404, "Client not found")
+    system = "You are a credit-bureau analyst. Return STRICT JSON only."
+    user_prompt = f"""
+Generate a realistic mock CIBIL credit report for:
+- Name: {client['name']}
+- PAN: {client['pan']}
+- Mobile: {client['mobile']}
+
+Return JSON with schema:
+{{
+  "score": <int 300-900>,
+  "band": "<poor|fair|good|excellent>",
+  "band_color": "<red|yellow|green|blue>",
+  "on_time_payments_pct": <float 60-100>,
+  "credit_utilization_pct": <float 5-95>,
+  "total_accounts": <int 1-15>,
+  "active_loans": <int 0-6>,
+  "hard_enquiries_6m": <int 0-8>,
+  "factors": [
+    {{"label": "<factor>", "impact": "<positive|negative|neutral>", "detail": "<brief>"}},
+    ... 4 items
+  ],
+  "summary": "<2-3 sentence narrative>"
+}}
+
+Band rules: 300-579 poor/red, 580-669 fair/yellow, 670-749 good/green, 750-900 excellent/blue.
+"""
+    try:
+        parsed = await _llm_json(system, user_prompt, f"cibil-{body.client_id}-{uuid.uuid4().hex[:6]}")
+    except Exception:
+        import hashlib, random as _r
+        seed = int(hashlib.md5(client["pan"].encode()).hexdigest()[:8], 16)
+        rnd = _r.Random(seed)
+        score = rnd.randint(520, 820)
+        band, col = (
+            ("excellent", "blue") if score >= 750 else
+            ("good", "green") if score >= 670 else
+            ("fair", "yellow") if score >= 580 else ("poor", "red")
+        )
+        parsed = {
+            "score": score, "band": band, "band_color": col,
+            "on_time_payments_pct": round(rnd.uniform(75, 99), 1),
+            "credit_utilization_pct": round(rnd.uniform(15, 75), 1),
+            "total_accounts": rnd.randint(2, 9),
+            "active_loans": rnd.randint(0, 4),
+            "hard_enquiries_6m": rnd.randint(0, 5),
+            "factors": [
+                {"label": "Payment history", "impact": "positive" if score >= 700 else "negative", "detail": "Recent on-time EMI pattern"},
+                {"label": "Credit utilization", "impact": "neutral", "detail": "Within typical range"},
+                {"label": "Credit mix", "impact": "positive", "detail": "Healthy blend of secured/unsecured"},
+                {"label": "Enquiry velocity", "impact": "negative" if score < 650 else "neutral", "detail": "Recent enquiries observed"},
+            ],
+            "summary": f"CIBIL score {score} ({band}). Overall credit discipline appears {band}.",
+        }
+    parsed["report_id"] = f"cib_{uuid.uuid4().hex[:10]}"
+    parsed["client_id"] = body.client_id
+    parsed["pan"] = client["pan"]
+    parsed["name"] = client["name"]
+    parsed["created_at"] = datetime.now(timezone.utc).isoformat()
+    await db.cibil_reports.insert_one({**parsed, "lender_id": current.user_id})
+    parsed.pop("_id", None)
+    return parsed
+
+@api.post("/loan-apps/create", response_model=LoanApplication)
+async def create_loan_app(body: CreateLoanAppRequest, current: UserPublic = Depends(get_current_user)):
+    client = await db.clients.find_one({"client_id": body.client_id, "lender_id": current.user_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(404, "Client not found")
+    if body.amount <= 0 or body.term_months <= 0 or body.interest_rate < 0:
+        raise HTTPException(400, "Invalid loan params")
+    app_id = f"app_{uuid.uuid4().hex[:10]}"
+    now = datetime.now(timezone.utc)
+    borrower = {
+        "name": client["name"],
+        "avatar": client.get("avatar"),
+        "age": 30,
+        "occupation": "Client",
+        "monthly_income": float(body.statement_analysis.get("total_credit", 0) / max(body.statement_analysis.get("months_analyzed", 1), 1)) if body.statement_analysis else 50000.0,
+        "employment_years": 3.0,
+        "existing_debts": 0.0,
+        "credit_history_years": 5.0,
+        "previous_defaults": (body.statement_analysis or {}).get("bounced_transactions", 0),
+    }
+    doc = {
+        "application_id": app_id,
+        "client_id": body.client_id,
+        "lender_id": current.user_id,
+        "borrower": borrower,
+        "amount": float(body.amount),
+        "purpose": body.purpose,
+        "term_months": int(body.term_months),
+        "interest_rate": float(body.interest_rate),
+        "status": "pending",
+        "ai_score": None,
+        "ai_risk": None,
+        "ai_recommendation": None,
+        "ai_reasoning": None,
+        "ai_factors": None,
+        "statement_analysis": body.statement_analysis,
+        "cibil_report": body.cibil_report,
+        "created_at": now,
+        "decided_at": None,
+        "decided_by": None,
+    }
+    await db.applications.insert_one(doc)
+    await _notify(current.user_id, "New loan created",
+                  f"Loan application of ₹{body.amount:,.0f} created for {client['name']}.",
+                  "application")
+    doc.pop("_id", None)
+    return LoanApplication(**{k: v for k, v in doc.items() if k in LoanApplication.model_fields})
 
 # ---------- AI Credit Scoring ----------
 async def run_ai_credit_score(app_doc: dict) -> dict:

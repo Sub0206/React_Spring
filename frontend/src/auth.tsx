@@ -3,8 +3,9 @@ import { api, saveToken, clearToken, getToken } from "./api";
 
 export type User = {
   user_id: string;
-  email: string;
+  mobile: string;
   name: string;
+  email?: string | null;
   picture?: string | null;
   role: string;
 };
@@ -12,8 +13,8 @@ export type User = {
 type AuthCtx = {
   user: User | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string, name: string) => Promise<void>;
+  sendOtp: (mobile: string, purpose: "signup" | "login", name?: string) => Promise<{ demo_otp?: string }>;
+  verifyOtp: (mobile: string, otp: string) => Promise<void>;
   googleExchange: (sessionId: string) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -47,21 +48,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     })();
   }, [refresh]);
 
-  const login = async (email: string, password: string) => {
-    const res = await api<{ access_token: string; user: User }>("/auth/login", {
+  const sendOtp = async (mobile: string, purpose: "signup" | "login", name?: string) => {
+    return await api<{ demo_otp?: string }>("/auth/send-otp", {
       method: "POST",
       auth: false,
-      body: { email, password },
+      body: { mobile, purpose, name },
     });
-    await saveToken(res.access_token);
-    setUser(res.user);
   };
 
-  const register = async (email: string, password: string, name: string) => {
-    const res = await api<{ access_token: string; user: User }>("/auth/register", {
+  const verifyOtp = async (mobile: string, otp: string) => {
+    const res = await api<{ access_token: string; user: User }>("/auth/verify-otp", {
       method: "POST",
       auth: false,
-      body: { email, password, name },
+      body: { mobile, otp },
     });
     await saveToken(res.access_token);
     setUser(res.user);
@@ -83,7 +82,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <Ctx.Provider value={{ user, loading, login, register, googleExchange, logout, refresh }}>
+    <Ctx.Provider value={{ user, loading, sendOtp, verifyOtp, googleExchange, logout, refresh }}>
       {children}
     </Ctx.Provider>
   );

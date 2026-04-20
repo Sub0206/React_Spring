@@ -59,7 +59,7 @@ export default function Dashboard() {
             <Text style={styles.hello}>Hi, {user?.name?.split(" ")[0] || "Lender"} 👋</Text>
             <Text style={styles.subhead}>Your lending dashboard</Text>
           </View>
-          <TouchableOpacity testID="btn-notifications" onPress={() => router.push("/(tabs)/notifications")} style={styles.bell}>
+          <TouchableOpacity testID="btn-notifications" onPress={() => router.push("/notifications")} style={styles.bell}>
             <Ionicons name="notifications" size={22} color={Colors.textPrimary} />
           </TouchableOpacity>
         </View>
