@@ -1758,9 +1758,239 @@ async def seed_demo_data():
         await db.applications.insert_one(doc)
     logger.info("Seed complete")
 
+
+async def seed_demo_loans():
+    """Populate realistic demo loans covering every EMI state for testing.
+
+    States covered (per user's requirement):
+      - Fully paid (closed/completed)
+      - Current-month pending
+      - Overdue unpaid
+      - Overdue paid (paid late)
+      - Future upcoming
+      - Rescheduled
+      - Rolled-back
+      - Multiple active loans
+      - Defaulted
+    """
+    count = await db.loans.count_documents({"seed": True})
+    if count > 0:
+        return
+    logger.info("Seeding demo loans for testing...")
+
+    now = datetime.now(timezone.utc)
+    y, m = now.year, now.month
+
+    def dt(year: int, month: int, day: int = 10) -> datetime:
+        # Clamp day to a safe value for the month
+        try:
+            return datetime(year, month, day, 0, 0, 0, tzinfo=timezone.utc)
+        except ValueError:
+            return datetime(year, month, 28, 0, 0, 0, tzinfo=timezone.utc)
+
+    def prev_month(yy: int, mm: int, delta: int = 1):
+        mm -= delta
+        while mm < 1:
+            mm += 12; yy -= 1
+        return yy, mm
+
+    def next_month(yy: int, mm: int, delta: int = 1):
+        mm += delta
+        while mm > 12:
+            mm -= 12; yy += 1
+        return yy, mm
+
+    # Prefer the primary demo lender 9876543210; else first lender found.
+    lender = await db.users.find_one({"mobile": "9876543210"}, {"_id": 0})
+    if not lender:
+        lender = await db.users.find_one({"role": {"$in": ["lender", "admin"]}}, {"_id": 0})
+    lender_id = lender["user_id"] if lender else "u_demo_lender"
+
+    demo_clients = [
+        ("Rajesh Kumar",    "9810000001", "ABCDE0001R", "Kumar Enterprises"),
+        ("Sneha Reddy",     "9810000002", "ABCDE0002R", "Freelance Designer"),
+        ("Arjun Mehta",     "9810000003", "ABCDE0003R", "Software Consultant"),
+        ("Priya Nair",      "9810000004", "ABCDE0004R", "Medical Practitioner"),
+        ("Vikram Singh",    "9810000005", "ABCDE0005R", "Transport Business"),
+        ("Ananya Iyer",     "9810000006", "ABCDE0006R", "Content Creator"),
+        ("Rahul Desai",     "9810000007", "ABCDE0007R", "Retail Shop"),
+        ("Kavya Sharma",    "9810000008", "ABCDE0008R", "Yoga Instructor"),
+        ("Suresh Pillai",   "9810000009", "ABCDE0009R", "Textile Export"),
+        ("Meera Joshi",     "9810000010", "ABCDE0010R", "Digital Marketer"),
+    ]
+
+    client_docs = []
+    for i, (name, mobile, pan, occ) in enumerate(demo_clients):
+        existing = await db.clients.find_one({"lender_id": lender_id, "pan": pan}, {"_id": 0})
+        if existing:
+            client_docs.append(existing); continue
+        cdoc = {
+            "client_id": f"cli_seed_{i:03d}", "lender_id": lender_id,
+            "name": name, "mobile": mobile,
+            "aadhaar_masked": "XXXX-XXXX-" + str(1000 + i),
+            "aadhaar_last4": str(1000 + i), "pan": pan,
+            "aadhaar_name": name, "pan_name": name, "pan_dob": "1990-01-15",
+            "address_line1": "123 MG Road", "address_line2": None,
+            "city": "Bengaluru", "state": "Karnataka", "pincode": "560001",
+            "aadhaar_verified": True, "pan_verified": True, "otp_verified": False,
+            "status": "active", "reject_reason": None, "reject_at": None,
+            "avatar": None, "created_at": now,
+        }
+        await db.clients.insert_one(cdoc); client_docs.append(cdoc)
+
+    def make_schedule(emi: float, months: int, start_year: int, start_month: int, day: int = 10):
+        out = []
+        yy, mm = start_year, start_month
+        for k in range(1, months + 1):
+            out.append({
+                "month": k, "due_date": dt(yy, mm, day),
+                "amount": emi, "status": "upcoming",
+                "paid_at": None, "was_late": False,
+            })
+            yy, mm = next_month(yy, mm, 1)
+        return out
+
+    def borrower_profile(c):
+        return {
+            "name": c["name"],
+            "avatar": None,
+            "age": 34,
+            "occupation": "Self-employed",
+            "monthly_income": 50000.0, "employment_years": 4.0,
+            "existing_debts": 5000.0, "credit_history_years": 6.0,
+            "previous_defaults": 0,
+        }
+
+    loans_plan = []
+
+    # ---- Loan 1: fully paid (completed)  ---- 6 months, all paid on time
+    c = client_docs[0]
+    emi = 8500
+    sy, sm = prev_month(y, m, 6)
+    sched = make_schedule(emi, 6, sy, sm)
+    for s in sched:
+        s["status"] = "paid"
+        s["paid_at"] = s["due_date"] - timedelta(days=2)
+        s["was_late"] = False
+    loans_plan.append(("L1_COMPLETED", c, sched, "completed", emi * 6))
+
+    # ---- Loan 2: current-month pending + 2 past paid + 3 future ----
+    c = client_docs[1]
+    emi = 12000
+    sy, sm = prev_month(y, m, 2)
+    sched = make_schedule(emi, 6, sy, sm)
+    # Mark months 1,2 paid on time; month 3 = current pending; rest future.
+    for s in sched[:2]:
+        s["status"] = "paid"
+        s["paid_at"] = s["due_date"] - timedelta(days=1)
+        s["was_late"] = False
+    loans_plan.append(("L2_CURRENT_PENDING", c, sched, "active", emi * 2))
+
+    # ---- Loan 3: has OVERDUE unpaid (past month not paid) ----
+    c = client_docs[2]
+    emi = 15500
+    sy, sm = prev_month(y, m, 3)
+    sched = make_schedule(emi, 8, sy, sm)
+    # Months 1,2 paid; month 3 unpaid (OVERDUE — past due, not paid); month 4 current pending; 5-8 future
+    sched[0]["status"] = "paid"; sched[0]["paid_at"] = sched[0]["due_date"] - timedelta(days=1)
+    sched[1]["status"] = "paid"; sched[1]["paid_at"] = sched[1]["due_date"] + timedelta(days=3); sched[1]["was_late"] = True
+    # sched[2] stays upcoming → overdue (past)
+    loans_plan.append(("L3_OVERDUE", c, sched, "active", emi * 2))
+
+    # ---- Loan 4: Overdue paid (paid late, past) ----
+    c = client_docs[3]
+    emi = 9800
+    sy, sm = prev_month(y, m, 4)
+    sched = make_schedule(emi, 9, sy, sm)
+    for i in range(4):
+        sched[i]["status"] = "paid"
+        late = i in (1, 3)
+        sched[i]["paid_at"] = sched[i]["due_date"] + timedelta(days=6 if late else -1)
+        sched[i]["was_late"] = late
+    loans_plan.append(("L4_OVERDUE_PAID", c, sched, "active", emi * 4))
+
+    # ---- Loan 5: Future upcoming only (just funded — first EMI in 2 months) ----
+    c = client_docs[4]
+    emi = 6400
+    sy, sm = next_month(y, m, 1)
+    sched = make_schedule(emi, 6, sy, sm)
+    loans_plan.append(("L5_FUTURE", c, sched, "active", 0))
+
+    # ---- Loan 6: Rescheduled EMI (month 3 moved forward by 10 days) ----
+    c = client_docs[5]
+    emi = 11200
+    sy, sm = prev_month(y, m, 2)
+    sched = make_schedule(emi, 6, sy, sm)
+    sched[0]["status"] = "paid"; sched[0]["paid_at"] = sched[0]["due_date"]
+    sched[1]["status"] = "paid"; sched[1]["paid_at"] = sched[1]["due_date"]
+    # Month 3 (current) rescheduled +10 days
+    sched[2]["due_date"] = sched[2]["due_date"] + timedelta(days=10)
+    loans_plan.append(("L6_RESCHEDULED", c, sched, "active", emi * 2))
+
+    # ---- Loan 7: Rolled-back payment (month 2 was paid, now undone) ----
+    c = client_docs[6]
+    emi = 7600
+    sy, sm = prev_month(y, m, 2)
+    sched = make_schedule(emi, 6, sy, sm)
+    sched[0]["status"] = "paid"; sched[0]["paid_at"] = sched[0]["due_date"]
+    # month 2 explicitly upcoming (reverted) — will show as OVERDUE since past
+    # Note: Real undo leaves status=upcoming. Because month 2 is past-due now, it becomes overdue.
+    loans_plan.append(("L7_ROLLBACK", c, sched, "active", emi))
+
+    # ---- Loan 8 & 9: Multiple active loans for same customer (client 7) ----
+    c = client_docs[7]
+    for j, (emiAmt, months) in enumerate([(5200, 6), (14500, 12)]):
+        sy, sm = prev_month(y, m, 1)
+        sched = make_schedule(emiAmt, months, sy, sm)
+        sched[0]["status"] = "paid"; sched[0]["paid_at"] = sched[0]["due_date"] - timedelta(days=1)
+        loans_plan.append((f"L8+{j}_MULTI", c, sched, "active", emiAmt))
+
+    # ---- Loan 10: Defaulted loan (3 months all unpaid past due) ----
+    c = client_docs[8]
+    emi = 18500
+    sy, sm = prev_month(y, m, 4)
+    sched = make_schedule(emi, 6, sy, sm)
+    # All past months unpaid (defaulted)
+    loans_plan.append(("L10_DEFAULT", c, sched, "defaulted", 0))
+
+    # ---- Loan 11: Healthy mid-term (4/12 paid, rest future) ----
+    c = client_docs[9]
+    emi = 10500
+    sy, sm = prev_month(y, m, 4)
+    sched = make_schedule(emi, 12, sy, sm)
+    for i in range(4):
+        sched[i]["status"] = "paid"
+        sched[i]["paid_at"] = sched[i]["due_date"] - timedelta(days=1)
+    loans_plan.append(("L11_HEALTHY", c, sched, "active", emi * 4))
+
+    for code, c, sched, status, paid_amount in loans_plan:
+        loan_id = f"loan_seed_{code.lower().replace('+','_')}_{uuid.uuid4().hex[:6]}"
+        principal = sum(s["amount"] for s in sched)
+        total_repayment = principal  # interest-free for simplicity in demo
+        doc = {
+            "loan_id": loan_id,
+            "application_id": f"app_seed_{code}",
+            "client_id": c["client_id"],
+            "borrower": borrower_profile(c),
+            "principal": principal,
+            "interest_rate": 12.0,
+            "term_months": len(sched),
+            "monthly_payment": sched[0]["amount"],
+            "total_repayment": total_repayment,
+            "paid_amount": paid_amount,
+            "status": status,
+            "repayment_schedule": sched,
+            "funded_at": sched[0]["due_date"] - timedelta(days=20),
+            "funded_by": lender_id,
+            "seed": True,
+        }
+        await db.loans.insert_one(doc)
+    logger.info(f"Seeded {len(loans_plan)} demo loans across {len(demo_clients)} clients")
+
 @app.on_event("startup")
 async def startup():
     await seed_demo_data()
+    await seed_demo_loans()
 
 @app.on_event("shutdown")
 async def shutdown():

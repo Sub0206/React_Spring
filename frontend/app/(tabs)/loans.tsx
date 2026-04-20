@@ -114,7 +114,7 @@ export default function Loans() {
           const statusLabel =
             item.status === "completed" ? "COMPLETED" :
             item.status === "defaulted" ? "DEFAULTED" :
-            hasOverdue ? "OVERDUE" : "ON TRACK";
+            hasOverdue ? (o.count > 1 ? "AT RISK" : "OVERDUE") : "ON TRACK";
 
           return (
             <TouchableOpacity
