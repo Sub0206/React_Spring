@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, Pressable, ScrollView } from "react-native";
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -130,10 +130,6 @@ export default function Loans() {
 
   const totalOverdue = enriched.reduce((s, x) => s + x.a.overdueCount, 0);
   const overdueAmount = enriched.reduce((s, x) => s + x.a.overdueAmount, 0);
-
-  const goToOverdue = () => {
-    try { router.push("/overdue"); } catch {}
-  };
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -318,20 +314,6 @@ const styles = StyleSheet.create({
     width: 42, height: 42, borderRadius: 21,
     backgroundColor: Colors.primarySoft, alignItems: "center", justifyContent: "center",
   },
-
-  overdueBanner: {
-    flexDirection: "row", alignItems: "center", gap: 12,
-    marginHorizontal: Spacing.lg, marginBottom: Spacing.sm,
-    padding: 14, borderRadius: Radii.lg,
-    backgroundColor: Colors.danger, ...Shadows.danger,
-  },
-  overdueIcon: {
-    width: 40, height: 40, borderRadius: 20,
-    backgroundColor: "rgba(255,255,255,0.22)",
-    alignItems: "center", justifyContent: "center",
-  },
-  overdueTitle: { color: "#fff", fontSize: 15, fontWeight: "800" },
-  overdueSub: { color: "#ffffffd8", fontSize: 12, marginTop: 2, fontWeight: "600" },
 
   filtersWrap: { paddingVertical: 8 },
   filter: {
