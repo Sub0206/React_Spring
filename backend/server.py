@@ -46,6 +46,9 @@ class UserPublic(BaseModel):
     email: Optional[str] = None
     picture: Optional[str] = None
     role: str = "lender"
+    subscription_plan: Optional[str] = None
+    subscription_status: Optional[str] = None
+    subscription_expires_at: Optional[datetime] = None
     created_at: datetime
 
 class SendOtpRequest(BaseModel):
@@ -74,9 +77,17 @@ class ClientModel(BaseModel):
     aadhaar_name: Optional[str] = None
     pan_name: Optional[str] = None
     pan_dob: Optional[str] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
     aadhaar_verified: bool = False
     pan_verified: bool = False
     otp_verified: bool = False
+    status: str = "active"
+    reject_reason: Optional[str] = None
+    reject_at: Optional[datetime] = None
     avatar: Optional[str] = None
     created_at: datetime
 
@@ -125,6 +136,30 @@ class CreateClientRequest(BaseModel):
     aadhaar_name: Optional[str] = None
     pan_name: Optional[str] = None
     pan_dob: Optional[str] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+
+class SubscribeRequest(BaseModel):
+    plan: Literal["starter", "smart", "prime"]
+    method: Literal["upi", "card", "phonepe", "gpay"] = "upi"
+
+class RejectLoanRequest(BaseModel):
+    client_id: str
+    reason: str
+    statement_analysis: Optional[dict] = None
+    cibil_report: Optional[dict] = None
+
+class ApproveLoanRequest(BaseModel):
+    client_id: str
+    amount: float
+    term_months: int
+    interest_rate: float = 0.0
+    proof_image_base64: Optional[str] = None
+    statement_analysis: Optional[dict] = None
+    cibil_report: Optional[dict] = None
 
 class BorrowerProfile(BaseModel):
     name: str
@@ -619,9 +654,17 @@ async def client_create(body: CreateClientRequest, current: UserPublic = Depends
         "aadhaar_name": body.aadhaar_name,
         "pan_name": body.pan_name or p.get("name"),
         "pan_dob": body.pan_dob or p.get("dob"),
+        "address_line1": body.address_line1,
+        "address_line2": body.address_line2,
+        "city": body.city,
+        "state": body.state,
+        "pincode": body.pincode,
         "aadhaar_verified": True,
         "pan_verified": True,
         "otp_verified": True,
+        "status": "active",
+        "reject_reason": None,
+        "reject_at": None,
         "avatar": _r.choice(avatars),
         "created_at": datetime.now(timezone.utc),
     }
@@ -872,6 +915,166 @@ Band rules: 300-579 poor/red, 580-669 fair/yellow, 670-749 good/green, 750-900 e
     await db.cibil_reports.insert_one({**parsed, "lender_id": current.user_id})
     parsed.pop("_id", None)
     return parsed
+
+# ---------- Subscriptions ----------
+PLANS = [
+    {"id": "starter", "name": "Starter Loan", "price": 2999, "features": ["Up to 10 active clients", "Basic KYC verification", "Mobile OTP verification", "Email support"]},
+    {"id": "smart", "name": "Smart Credit", "price": 4999, "features": ["Up to 50 clients", "AI credit scoring", "Bank statement analysis", "Priority email support"], "popular": True},
+    {"id": "prime", "name": "Prime Elite", "price": 6999, "features": ["Unlimited clients", "CIBIL reports & scoring", "AI risk analytics", "Dedicated manager", "24/7 support"]},
+]
+
+@api.get("/subscriptions/plans")
+async def list_plans():
+    return {"plans": PLANS}
+
+@api.post("/subscriptions/subscribe")
+async def subscribe(body: SubscribeRequest, current: UserPublic = Depends(get_current_user)):
+    plan = next((p for p in PLANS if p["id"] == body.plan), None)
+    if not plan:
+        raise HTTPException(400, "Invalid plan")
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(days=30)
+    await db.users.update_one(
+        {"user_id": current.user_id},
+        {"$set": {
+            "subscription_plan": plan["id"],
+            "subscription_status": "active",
+            "subscription_expires_at": expires,
+        }},
+    )
+    await db.payments.insert_one({
+        "payment_id": f"pay_{uuid.uuid4().hex[:10]}",
+        "user_id": current.user_id,
+        "plan": plan["id"],
+        "amount": plan["price"],
+        "method": body.method,
+        "status": "success",
+        "created_at": now,
+    })
+    await _notify(current.user_id, "Subscription active",
+                  f"Welcome to {plan['name']}. Valid till {expires.strftime('%d %b %Y')}.", "system")
+    return {"ok": True, "plan": plan, "expires_at": expires.isoformat()}
+
+@api.get("/subscriptions/me")
+async def my_subscription(current: UserPublic = Depends(get_current_user)):
+    user = await db.users.find_one({"user_id": current.user_id}, {"_id": 0})
+    return {
+        "plan": user.get("subscription_plan"),
+        "status": user.get("subscription_status"),
+        "expires_at": user.get("subscription_expires_at"),
+    }
+
+# ---------- Loan approve / reject ----------
+@api.post("/loan-apps/reject")
+async def reject_loan(body: RejectLoanRequest, current: UserPublic = Depends(get_current_user)):
+    client = await db.clients.find_one({"client_id": body.client_id, "lender_id": current.user_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(404, "Client not found")
+    now = datetime.now(timezone.utc)
+    await db.clients.update_one(
+        {"client_id": body.client_id, "lender_id": current.user_id},
+        {"$set": {"status": "rejected", "reject_reason": body.reason.strip() or "No reason", "reject_at": now}},
+    )
+    # Record application record for history
+    app_id = f"app_{uuid.uuid4().hex[:10]}"
+    await db.applications.insert_one({
+        "application_id": app_id,
+        "client_id": body.client_id,
+        "lender_id": current.user_id,
+        "borrower": {
+            "name": client["name"], "avatar": client.get("avatar"),
+            "age": 30, "occupation": "Client", "monthly_income": 50000.0,
+            "employment_years": 3.0, "existing_debts": 0.0,
+            "credit_history_years": 5.0, "previous_defaults": 0,
+        },
+        "amount": 0, "purpose": "N/A", "term_months": 0, "interest_rate": 0,
+        "status": "rejected",
+        "reject_reason": body.reason,
+        "statement_analysis": body.statement_analysis,
+        "cibil_report": body.cibil_report,
+        "created_at": now, "decided_at": now, "decided_by": current.user_id,
+        "ai_score": None, "ai_risk": None, "ai_recommendation": None, "ai_reasoning": None, "ai_factors": None,
+    })
+    await _notify(current.user_id, "Client rejected",
+                  f"{client['name']} marked as rejected. Reason: {body.reason}", "application")
+    return {"ok": True, "client_id": body.client_id, "reject_reason": body.reason}
+
+def compute_emi(principal: float, rate_pct_annual: float, months: int) -> float:
+    if months <= 0:
+        return 0.0
+    if rate_pct_annual <= 0:
+        return round(principal / months, 2)
+    r = rate_pct_annual / 100 / 12
+    emi = (principal * r * (1 + r) ** months) / ((1 + r) ** months - 1)
+    return round(emi, 2)
+
+@api.post("/loan-apps/approve", response_model=Loan)
+async def approve_loan(body: ApproveLoanRequest, current: UserPublic = Depends(get_current_user)):
+    client = await db.clients.find_one({"client_id": body.client_id, "lender_id": current.user_id}, {"_id": 0})
+    if not client:
+        raise HTTPException(404, "Client not found")
+    if body.amount <= 0 or body.term_months <= 0:
+        raise HTTPException(400, "Amount and term are required")
+    principal = float(body.amount)
+    months = int(body.term_months)
+    rate = float(body.interest_rate or 0)
+    emi = compute_emi(principal, rate, months)
+    total = round(emi * months, 2)
+    now = datetime.now(timezone.utc)
+    schedule = []
+    for m in range(1, months + 1):
+        schedule.append({
+            "month": m,
+            "due_date": now + timedelta(days=30 * m),
+            "amount": emi,
+            "status": "upcoming",
+            "paid_at": None,
+        })
+    # Create application record (approved/funded in one shot)
+    app_id = f"app_{uuid.uuid4().hex[:10]}"
+    loan_id = f"loan_{uuid.uuid4().hex[:10]}"
+    borrower = {
+        "name": client["name"], "avatar": client.get("avatar"),
+        "age": 30, "occupation": "Client", "monthly_income": 50000.0,
+        "employment_years": 3.0, "existing_debts": 0.0,
+        "credit_history_years": 5.0, "previous_defaults": 0,
+    }
+    await db.applications.insert_one({
+        "application_id": app_id,
+        "client_id": body.client_id, "lender_id": current.user_id,
+        "borrower": borrower,
+        "amount": principal, "purpose": "Client loan",
+        "term_months": months, "interest_rate": rate,
+        "status": "funded",
+        "statement_analysis": body.statement_analysis,
+        "cibil_report": body.cibil_report,
+        "created_at": now, "decided_at": now, "decided_by": current.user_id,
+        "ai_score": None, "ai_risk": None, "ai_recommendation": None, "ai_reasoning": None, "ai_factors": None,
+    })
+    await db.loans.insert_one({
+        "loan_id": loan_id,
+        "application_id": app_id,
+        "client_id": body.client_id,
+        "borrower": borrower,
+        "principal": principal, "interest_rate": rate,
+        "term_months": months, "monthly_payment": emi,
+        "total_repayment": total, "paid_amount": 0.0,
+        "status": "active",
+        "repayment_schedule": schedule,
+        "proof_image_base64": body.proof_image_base64,
+        "funded_at": now, "funded_by": current.user_id,
+    })
+    await db.transactions.insert_one({
+        "transaction_id": f"txn_{uuid.uuid4().hex[:10]}",
+        "type": "disbursement", "amount": -principal,
+        "loan_id": loan_id, "borrower_name": client["name"],
+        "description": f"Disbursed ₹{principal:,.0f} to {client['name']}",
+        "created_at": now,
+    })
+    await _notify(current.user_id, "Loan approved & disbursed",
+                  f"₹{principal:,.0f} to {client['name']} · EMI ₹{emi:,.0f}", "application")
+    loan_doc = await db.loans.find_one({"loan_id": loan_id}, {"_id": 0, "proof_image_base64": 0})
+    return Loan(**loan_doc)
 
 @api.post("/loan-apps/create", response_model=LoanApplication)
 async def create_loan_app(body: CreateLoanAppRequest, current: UserPublic = Depends(get_current_user)):

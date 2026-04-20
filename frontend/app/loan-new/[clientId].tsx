@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert,
-  ActivityIndicator, Image, Platform,
+  ActivityIndicator, Image, Platform, Modal,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -18,7 +18,7 @@ type Client = {
   avatar?: string | null;
 };
 
-type Step = "review" | "loan" | "upload" | "analyzing" | "analysis" | "cibil" | "summary";
+type Step = "review" | "upload" | "analyzing" | "analysis" | "cibil" | "summary";
 
 const riskHex = (c?: string) =>
   c === "green" ? Colors.success : c === "yellow" ? Colors.secondary : c === "red" ? Colors.danger : Colors.textMuted;
@@ -32,12 +32,6 @@ export default function NewLoan() {
   const [client, setClient] = useState<Client | null>(null);
   const [step, setStep] = useState<Step>("review");
 
-  // Loan input
-  const [amount, setAmount] = useState("50000");
-  const [purpose, setPurpose] = useState("Personal");
-  const [term, setTerm] = useState("12");
-  const [rate, setRate] = useState("11.0");
-
   // Upload
   const [file, setFile] = useState<{ name: string; size: number } | null>(null);
   const [months, setMonths] = useState<3 | 6 | 12>(6);
@@ -46,7 +40,11 @@ export default function NewLoan() {
   const [analysis, setAnalysis] = useState<any | null>(null);
   const [cibil, setCibil] = useState<any | null>(null);
   const [loadingCibil, setLoadingCibil] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+
+  // Reject modal
+  const [rejectOpen, setRejectOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
+  const [rejecting, setRejecting] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -98,27 +96,41 @@ export default function NewLoan() {
     } finally { setLoadingCibil(false); }
   };
 
-  const createLoan = async () => {
-    setSubmitting(true);
+  const createLoan = () => {
+    // Go to approve flow — pass statement + cibil through global state using AsyncStorage-like session
+    router.push({
+      pathname: "/loan-approve/[clientId]",
+      params: {
+        clientId: String(clientId),
+        analysis: JSON.stringify(analysis || {}),
+        cibil: JSON.stringify(cibil || {}),
+      },
+    });
+  };
+
+  const submitReject = async () => {
+    if (!rejectReason.trim()) {
+      Alert.alert("Reason required", "Please enter why this client is being rejected.");
+      return;
+    }
+    setRejecting(true);
     try {
-      await api("/loan-apps/create", {
+      await api("/loan-apps/reject", {
         method: "POST",
         body: {
           client_id: clientId,
-          amount: parseFloat(amount),
-          purpose,
-          term_months: parseInt(term, 10),
-          interest_rate: parseFloat(rate),
+          reason: rejectReason.trim(),
           statement_analysis: analysis,
           cibil_report: cibil,
         },
       });
-      Alert.alert("Loan created", "Loan application recorded. You can review and fund it from Requests.", [
-        { text: "OK", onPress: () => router.replace("/(tabs)/applications") },
+      setRejectOpen(false);
+      Alert.alert("Client rejected", "This client has been marked rejected.", [
+        { text: "OK", onPress: () => router.replace("/(tabs)/clients") },
       ]);
     } catch (e: any) {
       Alert.alert("Failed", e.message);
-    } finally { setSubmitting(false); }
+    } finally { setRejecting(false); }
   };
 
   const downloadReport = (kind: "statement" | "cibil") => {
@@ -196,13 +208,13 @@ export default function NewLoan() {
       </View>
 
       <View style={styles.stepsBar}>
-        {["Review", "Loan", "Upload", "Analyze", "CIBIL", "Summary"].map((l, i) => {
-          const orderMap: Record<Step, number> = { review: 0, loan: 1, upload: 2, analyzing: 3, analysis: 3, cibil: 4, summary: 5 };
+        {["Review", "Upload", "Analyze", "CIBIL", "Summary"].map((l, i) => {
+          const orderMap: Record<Step, number> = { review: 0, upload: 1, analyzing: 2, analysis: 2, cibil: 3, summary: 4 };
           const active = orderMap[step] >= i;
           return (
             <React.Fragment key={l}>
               <View style={[styles.stepDot, { backgroundColor: active ? "#fff" : "#ffffff60" }]} />
-              {i < 5 && <View style={[styles.stepLine, { backgroundColor: orderMap[step] > i ? "#fff" : "#ffffff40" }]} />}
+              {i < 4 && <View style={[styles.stepLine, { backgroundColor: orderMap[step] > i ? "#fff" : "#ffffff40" }]} />}
             </React.Fragment>
           );
         })}
@@ -228,33 +240,7 @@ export default function NewLoan() {
             </Card>
 
             <View style={{ height: Spacing.md }} />
-            <PrimaryButton testID="review-next" title="Looks good · Continue" onPress={() => setStep("loan")} />
-          </>
-        )}
-
-        {step === "loan" && (
-          <>
-            <Text style={styles.h1}>Loan details</Text>
-            <Text style={styles.h1Sub}>Enter the principal, purpose and tenure.</Text>
-
-            <Card style={{ marginTop: Spacing.md }}>
-              <Label text="Loan amount (₹)" />
-              <Input testID="input-amount" keyboardType="number-pad" value={amount} onChangeText={(v) => setAmount(v.replace(/[^0-9]/g, ""))} />
-              <Label text="Purpose" mt />
-              <Input testID="input-purpose" value={purpose} onChangeText={setPurpose} />
-              <View style={{ flexDirection: "row", gap: Spacing.sm, marginTop: Spacing.md }}>
-                <View style={{ flex: 1 }}>
-                  <Label text="Term (months)" />
-                  <Input testID="input-term" keyboardType="number-pad" value={term} onChangeText={(v) => setTerm(v.replace(/[^0-9]/g, ""))} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Label text="Rate (% APR)" />
-                  <Input testID="input-rate" keyboardType="numeric" value={rate} onChangeText={(v) => setRate(v.replace(/[^0-9.]/g, ""))} />
-                </View>
-              </View>
-            </Card>
-            <View style={{ height: Spacing.md }} />
-            <PrimaryButton testID="loan-next" title="Continue to upload" onPress={() => setStep("upload")} />
+            <PrimaryButton testID="review-next" title="Continue" onPress={() => setStep("upload")} />
           </>
         )}
 
@@ -385,7 +371,7 @@ export default function NewLoan() {
                 <Image source={{ uri: client.avatar || "https://via.placeholder.com/60" }} style={styles.avatar} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.clientName}>{client.name}</Text>
-                  <Text style={styles.clientSub}>₹{parseFloat(amount || "0").toLocaleString()} · {term} months · {rate}% APR</Text>
+                  <Text style={styles.clientSub}>+91 {client.mobile} · {client.pan}</Text>
                 </View>
               </View>
             </Card>
@@ -424,7 +410,36 @@ export default function NewLoan() {
             </Card>
 
             <View style={{ height: Spacing.md }} />
-            <PrimaryButton testID="create-loan-btn" title="Create loan application" loading={submitting} onPress={createLoan} />
+            <View style={{ flexDirection: "row", gap: Spacing.sm }}>
+              <View style={{ flex: 1 }}>
+                <PrimaryButton testID="reject-btn" title="Reject" variant="danger" onPress={() => setRejectOpen(true)} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <PrimaryButton testID="create-loan-btn" title="Approve" variant="success" onPress={createLoan} />
+              </View>
+            </View>
+
+            <Modal visible={rejectOpen} transparent animationType="slide" onRequestClose={() => setRejectOpen(false)}>
+              <View style={styles.modalBackdrop}>
+                <View style={styles.modalSheet}>
+                  <Text style={{ fontSize: 18, fontWeight: "800", color: Colors.textPrimary }}>Reject client</Text>
+                  <Text style={{ color: Colors.textSecondary, marginTop: 6, marginBottom: Spacing.md }}>Why are you rejecting this client?</Text>
+                  <Input
+                    testID="reject-reason"
+                    placeholder="e.g. High bounce risk, low CIBIL"
+                    value={rejectReason}
+                    onChangeText={setRejectReason}
+                    multiline
+                    numberOfLines={3}
+                    style={{ height: 90, textAlignVertical: "top", paddingTop: 12 }}
+                  />
+                  <View style={{ height: Spacing.md }} />
+                  <PrimaryButton testID="confirm-reject" title="Confirm rejection" variant="danger" loading={rejecting} onPress={submitReject} />
+                  <View style={{ height: Spacing.sm }} />
+                  <PrimaryButton title="Cancel" variant="secondary" onPress={() => setRejectOpen(false)} />
+                </View>
+              </View>
+            </Modal>
           </>
         )}
       </ScrollView>
@@ -603,4 +618,6 @@ const styles = StyleSheet.create({
   },
   cibilHeroTitle: { color: "#fff", fontSize: 20, fontWeight: "800", marginTop: Spacing.sm },
   cibilHeroSub: { color: "#EADFFB", fontSize: 13, marginTop: 6, textAlign: "center" },
+  modalBackdrop: { flex: 1, backgroundColor: "#00000088", justifyContent: "flex-end" },
+  modalSheet: { backgroundColor: Colors.surface, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: Spacing.lg, paddingBottom: Spacing.xxl },
 });

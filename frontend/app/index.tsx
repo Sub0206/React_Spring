@@ -11,6 +11,7 @@ import {
   Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { Input, PrimaryButton } from "../src/ui";
 import { Colors, Radii, Shadows, Spacing } from "../src/theme";
@@ -18,6 +19,7 @@ import { useAuth } from "../src/auth";
 
 export default function AuthScreen() {
   const { sendOtp, verifyOtp } = useAuth();
+  const router = useRouter();
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [step, setStep] = useState<"form" | "otp">("form");
   const [mobile, setMobile] = useState("");
@@ -56,7 +58,10 @@ export default function AuthScreen() {
     }
     setLoading(true);
     try {
-      await verifyOtp(mobile, otp);
+      const user = await verifyOtp(mobile, otp);
+      if (mode === "signup" || !user.subscription_status) {
+        setTimeout(() => router.replace("/subscribe"), 80);
+      }
     } catch (e: any) {
       Alert.alert("Verification failed", e.message || "Invalid OTP.");
     } finally {

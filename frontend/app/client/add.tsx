@@ -10,7 +10,7 @@ import { Input, PrimaryButton } from "../../src/ui";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
 import { api } from "../../src/api";
 
-type Step = "basic" | "aadhaar" | "pan" | "otp" | "done";
+type Step = "basic" | "address" | "aadhaar" | "pan" | "otp" | "done";
 
 export default function AddClient() {
   const router = useRouter();
@@ -19,6 +19,13 @@ export default function AddClient() {
   // Basic
   const [name, setName] = useState("");
   const [mobile, setMobile] = useState("");
+
+  // Address
+  const [line1, setLine1] = useState("");
+  const [line2, setLine2] = useState("");
+  const [city, setCity] = useState("");
+  const [stateName, setStateName] = useState("");
+  const [pincode, setPincode] = useState("");
 
   // Aadhaar (new flow: number -> OTP -> verified)
   const [aadhaar, setAadhaar] = useState("");
@@ -137,6 +144,11 @@ export default function AddClient() {
           aadhaar_name: aadhaarName,
           pan_name: panName,
           pan_dob: panDob,
+          address_line1: line1.trim() || undefined,
+          address_line2: line2.trim() || undefined,
+          city: city.trim() || undefined,
+          state: stateName.trim() || undefined,
+          pincode: pincode.trim() || undefined,
         },
       });
       setStep("done");
@@ -145,7 +157,7 @@ export default function AddClient() {
     } finally { setLoading(false); }
   };
 
-  const progressPct = step === "basic" ? 20 : step === "aadhaar" ? 45 : step === "pan" ? 65 : step === "otp" ? 85 : 100;
+  const progressPct = step === "basic" ? 15 : step === "address" ? 30 : step === "aadhaar" ? 50 : step === "pan" ? 70 : step === "otp" ? 88 : 100;
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
@@ -160,9 +172,10 @@ export default function AddClient() {
         <View style={styles.heroBody}>
           <Text style={styles.heroSubtitle}>
             {step === "basic" ? "Step 1 · Basic details"
-              : step === "aadhaar" ? "Step 2 · Aadhaar KYC"
-              : step === "pan" ? "Step 3 · PAN KYC"
-              : step === "otp" ? "Step 4 · Mobile verification"
+              : step === "address" ? "Step 2 · Address"
+              : step === "aadhaar" ? "Step 3 · Aadhaar KYC"
+              : step === "pan" ? "Step 4 · PAN KYC"
+              : step === "otp" ? "Step 5 · Mobile verification"
               : "All done!"}
           </Text>
           <View style={styles.progressBar}>
@@ -187,7 +200,36 @@ export default function AddClient() {
                 />
               </View>
               <View style={{ height: Spacing.lg }} />
-              <PrimaryButton testID="next-aadhaar" title="Continue to Aadhaar" disabled={!canProceedBasic} onPress={() => setStep("aadhaar")} />
+              <PrimaryButton testID="next-address" title="Continue" disabled={!canProceedBasic} onPress={() => setStep("address")} />
+            </View>
+          )}
+
+          {step === "address" && (
+            <View style={styles.card}>
+              <EmojiHero emoji="🏠" title="Client address" sub="Residence on file for KYC." tint={Colors.secondary} />
+              <Label text="Address line 1" />
+              <Input testID="input-line1" placeholder="House / flat / street" value={line1} onChangeText={setLine1} />
+              <Label text="Address line 2 (optional)" mt />
+              <Input testID="input-line2" placeholder="Area / landmark" value={line2} onChangeText={setLine2} />
+              <View style={{ flexDirection: "row", gap: Spacing.sm, marginTop: Spacing.md }}>
+                <View style={{ flex: 1 }}>
+                  <Label text="City" />
+                  <Input testID="input-city" placeholder="Mumbai" value={city} onChangeText={setCity} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Label text="State" />
+                  <Input testID="input-state" placeholder="Maharashtra" value={stateName} onChangeText={setStateName} />
+                </View>
+              </View>
+              <Label text="Pincode" mt />
+              <Input testID="input-pincode" placeholder="400001" keyboardType="number-pad"
+                value={pincode} onChangeText={(v) => setPincode(sanitizeDigits(v, 6))} maxLength={6} />
+              <View style={{ height: Spacing.lg }} />
+              <PrimaryButton testID="next-aadhaar" title="Continue"
+                disabled={!(line1.trim() && city.trim() && stateName.trim() && pincode.length === 6)}
+                onPress={() => setStep("aadhaar")} />
+              <View style={{ height: Spacing.sm }} />
+              <PrimaryButton title="Back" variant="secondary" onPress={() => setStep("basic")} />
             </View>
           )}
 

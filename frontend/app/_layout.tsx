@@ -66,6 +66,8 @@ function AuthGate() {
       <Stack.Screen name="client/add" options={{ presentation: "modal" }} />
       <Stack.Screen name="client/[id]" options={{ presentation: "card" }} />
       <Stack.Screen name="loan-new/[clientId]" options={{ presentation: "card" }} />
+      <Stack.Screen name="loan-approve/[clientId]" options={{ presentation: "card" }} />
+      <Stack.Screen name="subscribe" options={{ presentation: "card" }} />
       <Stack.Screen name="notifications" options={{ presentation: "card" }} />
     </Stack>
   );

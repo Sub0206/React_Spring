@@ -11,6 +11,9 @@ type Client = {
   client_id: string; name: string; mobile: string;
   aadhaar_masked: string; pan: string;
   aadhaar_name?: string; pan_name?: string; pan_dob?: string;
+  address_line1?: string; address_line2?: string;
+  city?: string; state?: string; pincode?: string;
+  status?: string; reject_reason?: string | null;
   aadhaar_verified: boolean; pan_verified: boolean; otp_verified: boolean;
   avatar?: string | null; created_at: string;
 };
@@ -110,6 +113,31 @@ export default function ClientDetail() {
             <Row icon="card" label="Aadhaar" value={client.aadhaar_masked} sub={client.aadhaar_name} verified={client.aadhaar_verified} />
             <Row icon="document-text" label="PAN" value={client.pan} sub={client.pan_name && client.pan_dob ? `${client.pan_name} · DOB ${client.pan_dob}` : client.pan_name} verified={client.pan_verified} last />
           </Card>
+
+          {(client.address_line1 || client.city) && (
+            <Card style={{ marginTop: Spacing.md }}>
+              <Text style={styles.sectionTitle}>Address</Text>
+              <View style={{ flexDirection: "row", gap: 12, alignItems: "flex-start", paddingVertical: 10 }}>
+                <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: Colors.primary + "15", alignItems: "center", justifyContent: "center" }}>
+                  <Ionicons name="location" size={18} color={Colors.primary} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  {!!client.address_line1 && <Text style={{ color: Colors.textPrimary, fontSize: 14, fontWeight: "700" }}>{client.address_line1}</Text>}
+                  {!!client.address_line2 && <Text style={{ color: Colors.textSecondary, fontSize: 13, marginTop: 2 }}>{client.address_line2}</Text>}
+                  <Text style={{ color: Colors.textSecondary, fontSize: 13, marginTop: 2 }}>
+                    {[client.city, client.state, client.pincode].filter(Boolean).join(" · ")}
+                  </Text>
+                </View>
+              </View>
+            </Card>
+          )}
+
+          {client.status === "rejected" && client.reject_reason && (
+            <View style={{ marginTop: Spacing.md, padding: Spacing.md, borderRadius: Radii.lg, backgroundColor: "#FFF4E5", borderWidth: 1, borderColor: "#FFA94D" }}>
+              <Text style={{ color: "#D97706", fontWeight: "800", fontSize: 12, letterSpacing: 0.5 }}>CLIENT REJECTED</Text>
+              <Text style={{ color: Colors.textPrimary, marginTop: 6 }}>{client.reject_reason}</Text>
+            </View>
+          )}
 
           <View style={styles.loansHeader}>
             <View style={{ flex: 1 }}>

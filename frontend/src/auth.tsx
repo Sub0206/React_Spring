@@ -8,13 +8,15 @@ export type User = {
   email?: string | null;
   picture?: string | null;
   role: string;
+  subscription_plan?: string | null;
+  subscription_status?: string | null;
 };
 
 type AuthCtx = {
   user: User | null;
   loading: boolean;
   sendOtp: (mobile: string, purpose: "signup" | "login", name?: string) => Promise<{ demo_otp?: string }>;
-  verifyOtp: (mobile: string, otp: string) => Promise<void>;
+  verifyOtp: (mobile: string, otp: string) => Promise<User>;
   googleExchange: (sessionId: string) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -64,6 +66,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
     await saveToken(res.access_token);
     setUser(res.user);
+    return res.user;
   };
 
   const googleExchange = async (sessionId: string) => {

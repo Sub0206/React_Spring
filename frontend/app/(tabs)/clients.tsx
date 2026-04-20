@@ -17,6 +17,8 @@ type Client = {
   aadhaar_verified: boolean;
   pan_verified: boolean;
   otp_verified: boolean;
+  status?: string;
+  reject_reason?: string | null;
   avatar?: string | null;
   created_at: string;
 };
@@ -111,26 +113,50 @@ export default function Clients() {
             )}
           </View>
         }
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            testID={`client-item-${item.client_id}`}
-            onPress={() => router.push({ pathname: "/client/[id]", params: { id: item.client_id } })}
-            activeOpacity={0.9}
-            style={styles.card}
-          >
-            <Image source={{ uri: item.avatar || "https://via.placeholder.com/80" }} style={styles.avatar} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.name}>{item.name}</Text>
-              <Text style={styles.meta}>+91 {item.mobile}</Text>
-              <View style={styles.badges}>
-                {item.aadhaar_verified && <Verified label="Aadhaar" />}
-                {item.pan_verified && <Verified label="PAN" />}
-                {item.otp_verified && <Verified label="OTP" />}
+        renderItem={({ item }) => {
+          const rejected = item.status === "rejected";
+          return (
+            <TouchableOpacity
+              testID={`client-item-${item.client_id}`}
+              onPress={() => router.push({ pathname: "/client/[id]", params: { id: item.client_id } })}
+              activeOpacity={0.9}
+              style={[styles.card, rejected && styles.cardRejected]}
+            >
+              <Image source={{ uri: item.avatar || "https://via.placeholder.com/80" }} style={styles.avatar} />
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <Text style={styles.name}>{item.name}</Text>
+                  {rejected && (
+                    <View style={styles.rejectChip}>
+                      <Ionicons name="close-circle" size={11} color="#fff" />
+                      <Text style={styles.rejectChipText}>REJECTED</Text>
+                    </View>
+                  )}
+                </View>
+                <Text style={styles.meta}>+91 {item.mobile}</Text>
+                {rejected && item.reject_reason ? (
+                  <Text
+                    // @ts-ignore web-only hover title
+                    accessibilityHint={item.reject_reason}
+                    // @ts-ignore
+                    title={item.reject_reason}
+                    numberOfLines={1}
+                    style={styles.rejectReason}
+                  >
+                    Reason: {item.reject_reason}
+                  </Text>
+                ) : (
+                  <View style={styles.badges}>
+                    {item.aadhaar_verified && <Verified label="Aadhaar" />}
+                    {item.pan_verified && <Verified label="PAN" />}
+                    {item.otp_verified && <Verified label="OTP" />}
+                  </View>
+                )}
               </View>
-            </View>
-            <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
-          </TouchableOpacity>
-        )}
+              <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
+            </TouchableOpacity>
+          );
+        }}
       />
     </SafeAreaView>
   );
@@ -171,6 +197,16 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface, borderRadius: Radii.xl,
     padding: Spacing.md, marginBottom: 10, ...Shadows.card,
   },
+  cardRejected: {
+    backgroundColor: "#FFF4E5",
+    borderWidth: 1, borderColor: "#FFA94D",
+  },
+  rejectChip: {
+    flexDirection: "row", alignItems: "center", gap: 3,
+    backgroundColor: "#FF8C00", paddingHorizontal: 6, paddingVertical: 2, borderRadius: Radii.pill,
+  },
+  rejectChipText: { color: "#fff", fontSize: 9, fontWeight: "800", letterSpacing: 0.5 },
+  rejectReason: { color: "#D97706", fontSize: 12, marginTop: 4, fontStyle: "italic" },
   avatar: { width: 52, height: 52, borderRadius: 26, backgroundColor: Colors.bgAlt },
   name: { fontSize: 16, fontWeight: "700", color: Colors.textPrimary },
   meta: { color: Colors.textSecondary, fontSize: 13, marginTop: 2 },
