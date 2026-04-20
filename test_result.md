@@ -254,7 +254,13 @@ test_plan:
 agent_communication:
   - agent: "main"
     message: |
-      Please test the following backend endpoints after latest iteration (iteration 5):
+      Iteration 6 (critical UX fixes) validated with testing agent:
+      1) Active Loans avatar removal — done
+      2) PAN flow OTP removal — POST /api/clients now accepts optional verification_id (backend tested OK)
+      3) Mark-paid modal — date picker + overdue detection + "Overdue Paid" chip; backend was_late still works
+      4) Approve loan — due_day (1-28) added; backend creates schedule anchored to chosen day-of-month (tested OK)
+      5) Tab bar — safe-area aware (useSafeAreaInsets + min spacing); responsive on 320/360/390/iPhone
+      All iteration 6 backend endpoints pass. Ready for user verification.
       1) POST /api/loan-apps/check-cibil — returns mock CIBIL JSON with score/band/factors/on_time/utilization/accounts.
          Auth as lender (mobile 9876543210, demo OTP from response) and create a client first if needed; then call with that client_id.
       2) GET /api/dashboard — must include inflow_chart (array of {label,value}) and outflow_chart; plus overdue_count, overdue_amount.
