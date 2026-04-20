@@ -3,6 +3,7 @@ import { Stack, useRouter, useSegments } from "expo-router";
 import * as Linking from "expo-linking";
 import { AuthProvider, useAuth } from "../src/auth";
 import { DialogProvider } from "../src/dialog";
+import { I18nProvider } from "../src/i18n";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { Colors } from "../src/theme";
@@ -69,6 +70,8 @@ function AuthGate() {
       <Stack.Screen name="loan-new/[clientId]" options={{ presentation: "card" }} />
       <Stack.Screen name="loan-approve/[clientId]" options={{ presentation: "card" }} />
       <Stack.Screen name="subscribe" options={{ presentation: "card" }} />
+      <Stack.Screen name="settings/language" options={{ presentation: "modal" }} />
+      <Stack.Screen name="subscription" options={{ presentation: "card" }} />
       <Stack.Screen name="overdue" options={{ presentation: "card" }} />
       <Stack.Screen name="notifications" options={{ presentation: "card" }} />
     </Stack>
@@ -78,12 +81,14 @@ function AuthGate() {
 export default function RootLayout() {
   return (
     <SafeAreaProvider>
-      <AuthProvider>
-        <DialogProvider>
-          <StatusBar style="dark" />
-          <AuthGate />
-        </DialogProvider>
-      </AuthProvider>
+      <I18nProvider>
+        <AuthProvider>
+          <DialogProvider>
+            <StatusBar style="dark" />
+            <AuthGate />
+          </DialogProvider>
+        </AuthProvider>
+      </I18nProvider>
     </SafeAreaProvider>
   );
 }

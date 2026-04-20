@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Alert, ActivityIndicator } from "react-native";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -9,6 +9,7 @@ import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
 
 type App = {
   application_id: string;
+  client_id?: string;
   borrower: {
     name: string; avatar?: string; age: number; occupation: string;
     monthly_income: number; employment_years: number; existing_debts: number;
@@ -16,6 +17,7 @@ type App = {
   };
   amount: number; purpose: string; term_months: number; interest_rate: number;
   status: string;
+  created_at?: string; requested_at?: string;
   ai_score?: number; ai_risk?: string; ai_recommendation?: string; ai_reasoning?: string;
   ai_factors?: { label: string; impact: string; detail: string }[];
 };
@@ -87,6 +89,22 @@ export default function ApplicationDetail() {
   const r = riskInfo(app.ai_risk);
   const b = app.borrower;
   const dti = ((b.existing_debts / Math.max(b.monthly_income, 1)) * 100).toFixed(0);
+  // Loan maths
+  const P = Number(app.amount) || 0;
+  const n = Math.max(1, Number(app.term_months) || 1);
+  const rMonthly = (Number(app.interest_rate) || 0) / 1200;
+  const emi = rMonthly > 0
+    ? Math.round((P * rMonthly * Math.pow(1 + rMonthly, n)) / (Math.pow(1 + rMonthly, n) - 1))
+    : Math.round(P / n);
+  const processingFee = Math.round(P * 0.015); // 1.5% standard processing fee
+  const netDisbursal = Math.max(0, P - processingFee);
+  // Requested date — prefer created_at then requested_at, else today
+  const reqDate = app.created_at || app.requested_at || new Date().toISOString();
+  const reqDateStr = new Date(reqDate).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
+  // Monthly due date — 5th of every month by convention (matches app default)
+  const dueDateStr = "5th of every month";
+  const shortId = (app.application_id || "").replace(/^app_?/, "").slice(0, 10).toUpperCase();
+  const recoBy = app.ai_recommendation || (app.ai_risk === "low" ? "Approve" : app.ai_risk === "high" ? "Manual Review" : "Approve with Caution");
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
@@ -99,28 +117,48 @@ export default function ApplicationDetail() {
       </View>
 
       <ScrollView contentContainerStyle={{ padding: Spacing.lg, paddingBottom: 160 }}>
-        {/* Borrower header */}
-        <View style={styles.borrowerHeader}>
-          <Image source={{ uri: b.avatar || "https://via.placeholder.com/80" }} style={styles.avatar} />
-          <View style={{ flex: 1 }}>
-            <Text style={styles.name}>{b.name}</Text>
-            <Text style={styles.meta}>{b.occupation} · Age {b.age}</Text>
-            <View style={{ flexDirection: "row", gap: 6, marginTop: 8 }}>
-              <Badge label={app.status.toUpperCase()} color={app.status === "pending" ? Colors.secondary : app.status === "funded" ? Colors.success : Colors.primary} />
-            </View>
+        {/* Clean text-only client header */}
+        <View style={styles.clientHeader}>
+          <Text style={styles.clientName}>{b.name}</Text>
+          <View style={styles.clientMetaRow}>
+            <Text style={styles.clientMeta}>ID #{shortId}</Text>
+            <View style={styles.dotSep} />
+            <Text style={styles.clientMeta}>Requested {reqDateStr}</Text>
+          </View>
+          <View style={{ flexDirection: "row", gap: 6, marginTop: 8 }}>
+            <Badge label={app.status.toUpperCase()} color={app.status === "pending" ? Colors.secondary : app.status === "funded" ? Colors.success : Colors.primary} />
           </View>
         </View>
 
-        {/* Amount card */}
-        <Card style={{ marginTop: Spacing.md }}>
-          <Text style={styles.label}>LOAN AMOUNT</Text>
-          <Text testID="loan-amount" style={styles.bigAmount}>${app.amount.toLocaleString()}</Text>
-          <View style={styles.metaRow}>
-            <View><Text style={styles.label}>Purpose</Text><Text style={styles.value}>{app.purpose}</Text></View>
-            <View><Text style={styles.label}>Term</Text><Text style={styles.value}>{app.term_months} mo</Text></View>
-            <View><Text style={styles.label}>Rate</Text><Text style={styles.value}>{app.interest_rate}%</Text></View>
+        {/* Premium loan summary */}
+        <View style={styles.summaryCard}>
+          <View style={styles.summaryHeaderRow}>
+            <Text style={styles.summaryHeaderTitle}>LOAN SUMMARY</Text>
+            <View style={[styles.riskChip, { backgroundColor: r.bg, borderColor: r.color + "55" }]}>
+              <View style={[styles.riskDot, { backgroundColor: r.color }]} />
+              <Text style={[styles.riskChipText, { color: r.color }]}>{r.label}</Text>
+            </View>
           </View>
-        </Card>
+          <Text testID="loan-amount" style={styles.summaryAmount}>₹{P.toLocaleString("en-IN")}</Text>
+          <Text style={styles.summaryPurpose}>{app.purpose} · {n} months · {app.interest_rate}% p.a.</Text>
+
+          <View style={styles.summaryGrid}>
+            <SumItem label="Monthly EMI" value={`₹${emi.toLocaleString("en-IN")}`} highlight />
+            <SumItem label="Tenure" value={`${n} months`} />
+            <SumItem label="Interest rate" value={`${app.interest_rate}% p.a.`} />
+            <SumItem label="Due date" value={dueDateStr} />
+            <SumItem label="Processing fee" value={`₹${processingFee.toLocaleString("en-IN")}`} />
+            <SumItem label="Net disbursal" value={`₹${netDisbursal.toLocaleString("en-IN")}`} />
+          </View>
+
+          <View style={styles.aiRecoRow}>
+            <Ionicons name="sparkles" size={16} color={Colors.primary} />
+            <Text style={styles.aiRecoLabel}>Recommended by AI</Text>
+            <Text style={[styles.aiRecoValue, { color: r.color }]}>
+              {String(recoBy).toUpperCase().replace(/_/g, " ")}
+            </Text>
+          </View>
+        </View>
 
         {/* AI Credit Score */}
         <View style={styles.aiCard}>
@@ -229,6 +267,15 @@ function Row({ label, value, last }: { label: string; value: string; last?: bool
   );
 }
 
+function SumItem({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
+  return (
+    <View style={[styles.sumItem, highlight && styles.sumItemHi]}>
+      <Text style={styles.sumLabel}>{label}</Text>
+      <Text style={[styles.sumValue, highlight && { color: Colors.primary, fontSize: 16 }]}>{value}</Text>
+    </View>
+  );
+}
+
 const rowStyles = StyleSheet.create({
   row: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 12 },
   divider: { borderBottomWidth: 1, borderBottomColor: Colors.borderLight },
@@ -243,6 +290,41 @@ const styles = StyleSheet.create({
   topTitle: { flex: 1, textAlign: "center", fontSize: 18, fontWeight: "800", color: Colors.textPrimary },
   borrowerHeader: { flexDirection: "row", alignItems: "center", gap: Spacing.md },
   avatar: { width: 72, height: 72, borderRadius: 36, backgroundColor: Colors.bgAlt },
+
+  clientHeader: { marginBottom: Spacing.md },
+  clientName: { fontSize: 24, fontWeight: "800", color: Colors.textPrimary, letterSpacing: -0.3 },
+  clientMetaRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 6 },
+  clientMeta: { color: Colors.textSecondary, fontSize: 13, fontWeight: "600" },
+  dotSep: { width: 3, height: 3, borderRadius: 1.5, backgroundColor: Colors.textMuted },
+
+  summaryCard: {
+    backgroundColor: Colors.surface, borderRadius: Radii.xl, padding: Spacing.lg,
+    marginBottom: Spacing.md, borderWidth: 1, borderColor: Colors.borderLight,
+    ...Shadows.card,
+  },
+  summaryHeaderRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  summaryHeaderTitle: { fontSize: 11, fontWeight: "800", color: Colors.textMuted, letterSpacing: 1 },
+  riskChip: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 4, borderRadius: Radii.pill, borderWidth: 1 },
+  riskDot: { width: 8, height: 8, borderRadius: 4 },
+  riskChipText: { fontWeight: "800", fontSize: 11, letterSpacing: 0.3 },
+  summaryAmount: { fontSize: 36, fontWeight: "800", color: Colors.textPrimary, marginTop: 8, letterSpacing: -0.7 },
+  summaryPurpose: { color: Colors.textSecondary, fontSize: 13, marginTop: 2, fontWeight: "600" },
+
+  summaryGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: Spacing.md },
+  sumItem: {
+    width: "48%", backgroundColor: Colors.bgAlt, borderRadius: Radii.lg,
+    paddingHorizontal: 12, paddingVertical: 10,
+  },
+  sumItemHi: { backgroundColor: Colors.primarySoft ?? (Colors.primary + "12"), borderWidth: 1, borderColor: Colors.primary + "2A" },
+  sumLabel: { fontSize: 11, color: Colors.textMuted, fontWeight: "700", letterSpacing: 0.4 },
+  sumValue: { fontSize: 15, fontWeight: "800", color: Colors.textPrimary, marginTop: 2 },
+
+  aiRecoRow: {
+    flexDirection: "row", alignItems: "center", gap: 8, marginTop: Spacing.md,
+    paddingTop: Spacing.md, borderTopWidth: 1, borderTopColor: Colors.borderLight,
+  },
+  aiRecoLabel: { flex: 1, color: Colors.textSecondary, fontSize: 12, fontWeight: "700", letterSpacing: 0.3 },
+  aiRecoValue: { fontSize: 13, fontWeight: "800" },
   name: { fontSize: 22, fontWeight: "800", color: Colors.textPrimary },
   meta: { color: Colors.textSecondary, fontSize: 14, marginTop: 2 },
   label: { fontSize: 11, color: Colors.textMuted, fontWeight: "700", letterSpacing: 0.5 },

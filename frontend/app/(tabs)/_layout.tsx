@@ -4,10 +4,12 @@ import { Ionicons } from "@expo/vector-icons";
 import { Colors } from "../../src/theme";
 import { Platform, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useI18n } from "../../src/i18n";
 
 export default function TabsLayout() {
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
+  const { t } = useI18n();
 
   // Responsive labels
   const showLabels = width >= 360;
@@ -64,7 +66,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="dashboard"
         options={{
-          title: "Home",
+          title: t("dashboard"),
           tabBarIcon: ({ color, focused }) => (
             <Ionicons name={focused ? "home" : "home-outline"} size={22} color={color} />
           ),
@@ -73,7 +75,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="applications"
         options={{
-          title: width < 360 ? "Reqs" : "Requests",
+          title: t("requests"),
           tabBarIcon: ({ color, focused }) => (
             <Ionicons name={focused ? "document-text" : "document-text-outline"} size={22} color={color} />
           ),
@@ -82,7 +84,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="loans"
         options={{
-          title: "Loans",
+          title: t("loans"),
           tabBarIcon: ({ color, focused }) => (
             <Ionicons name={focused ? "wallet" : "wallet-outline"} size={22} color={color} />
           ),
@@ -91,7 +93,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="clients"
         options={{
-          title: "Clients",
+          title: t("clients"),
           tabBarIcon: ({ color, focused }) => (
             <Ionicons name={focused ? "people" : "people-outline"} size={22} color={color} />
           ),
@@ -100,7 +102,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="profile"
         options={{
-          title: "Profile",
+          title: t("profile"),
           tabBarIcon: ({ color, focused }) => (
             <Ionicons name={focused ? "person-circle" : "person-circle-outline"} size={24} color={color} />
           ),

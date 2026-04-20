@@ -707,3 +707,12 @@ agent_communication:
             - "Parsing confidence" card with Accuracy pill, rows extracted, bounce matches, source, missing-pages flag, and a "Manual review recommended" banner when confidence is LOW.
         • Month-based validation now keyed off `months_covered_in_file` (not just `months_analyzed`), so only truly parsed short statements are rejected.
 
+  - agent: "main"
+    message: |
+      Iteration 15 complete.
+        • PDF download bug ROOT CAUSE FIXED: `src/pdf.ts` was reading AsyncStorage key `"access_token"` while the app stores the JWT under `"smart_lending_token"` (see `src/api.ts: TOKEN_KEY`). Helper now uses the exported `getToken()` from `src/api.ts`. Verified via real browser fetch from the preview frontend — Authorization header AND `?token=` fallback both return valid `application/pdf` (%PDF-1.4, 9605 bytes analysis / 3930 bytes CIBIL).
+        • Loan Request page (/application/[id]): avatar removed. Clean text header (Client Name · ID · Requested date · Status badge). Premium "LOAN SUMMARY" card now shows Loan Amount, Purpose, Tenure, Interest rate, Monthly EMI (auto-computed), Due date (5th of every month), Processing fee (1.5%), Net disbursal, Risk level, "Recommended by AI" callout.
+        • Multi-language i18n (6 languages): English, Hindi, Tamil, Telugu, Kannada, Malayalam. New `src/i18n.tsx` with I18nProvider + context, persists to AsyncStorage, re-renders UI on switch. Tabs + Profile + Settings + Subscription strings wired. New screen `/settings/language` with native-script preview. Verified: dashboard tabs switch to डैशबोर्ड / अनुरोध / ऋण / ग्राहक / प्रोफ़ाइल instantly in Hindi.
+        • Subscription page `/subscription`: Monthly/Yearly toggle, 3 plan cards (Starter ₹499/mo · Smart Credit ₹1499/mo POPULAR · Prime Elite ₹3999/mo), per-plan features, "Current plan" badge, upgrade CTA (payment gateway mocked).
+        • Profile tab gained Subscription + Language rows with icons.
+

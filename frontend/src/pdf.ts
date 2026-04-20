@@ -2,7 +2,7 @@ import { Platform, Alert, Linking } from "react-native";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import * as WebBrowser from "expo-web-browser";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import { getToken } from "./api";
 
 /**
  * Download + open a PDF from the given backend path with bullet-proof fallbacks.
@@ -19,7 +19,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 export async function downloadPdf(path: string, filename: string): Promise<void> {
   const base = (process.env.EXPO_PUBLIC_BACKEND_URL as string) || "";
   const url = path.startsWith("http") ? path : `${base}${path}`;
-  const token = (await AsyncStorage.getItem("access_token")) || "";
+  const token = (await getToken()) || "";
   const sep = url.includes("?") ? "&" : "?";
   const urlWithToken = `${url}${sep}token=${encodeURIComponent(token)}`;
   const safeName = filename

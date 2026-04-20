@@ -1,12 +1,13 @@
 import React, { useCallback, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, RefreshControl } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../src/auth";
 import { api } from "../../src/api";
 import { Card, PrimaryButton } from "../../src/ui";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
+import { useI18n, LOCALES } from "../../src/i18n";
 
 type Txn = {
   transaction_id: string;
@@ -24,8 +25,14 @@ function money(n: number) {
 
 export default function Profile() {
   const { user, logout } = useAuth();
+  const { locale, t } = useI18n();
+  const router = useRouter();
   const [txns, setTxns] = useState<Txn[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+
+  const langLabel = LOCALES.find((l) => l.code === locale)?.native || "English";
+  const currentTier = (user?.subscription_tier || "starter").toString();
+  const tierLabel = currentTier === "smart" ? "Smart Credit" : currentTier === "prime" ? "Prime Elite" : "Starter";
 
   const load = useCallback(async () => {
     try {
@@ -86,7 +93,40 @@ export default function Profile() {
         </Card>
 
         <Card style={{ marginTop: Spacing.md }}>
-          <Text style={styles.sectionTitle}>Settings</Text>
+          <Text style={styles.sectionTitle}>{t("settings")}</Text>
+
+          <TouchableOpacity
+            testID="row-subscription"
+            style={[styles.settingRow, styles.settingRowFeature]}
+            activeOpacity={0.7}
+            onPress={() => router.push("/subscription")}
+          >
+            <View style={[styles.settingIconWrap, { backgroundColor: Colors.primary + "15" }]}>
+              <Ionicons name="diamond" size={18} color={Colors.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.settingText}>{t("subscription")}</Text>
+              <Text style={styles.settingSub}>{t("current_plan")}: {tierLabel}</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            testID="row-language"
+            style={[styles.settingRow, styles.settingRowFeature]}
+            activeOpacity={0.7}
+            onPress={() => router.push("/settings/language")}
+          >
+            <View style={[styles.settingIconWrap, { backgroundColor: Colors.success + "15" }]}>
+              <Ionicons name="language" size={18} color={Colors.success} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.settingText}>{t("language")}</Text>
+              <Text style={styles.settingSub}>{langLabel}</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+          </TouchableOpacity>
+
           {[
             { icon: "notifications", label: "Notification preferences" },
             { icon: "lock-closed", label: "Privacy & security" },
@@ -103,7 +143,7 @@ export default function Profile() {
         <View style={{ marginTop: Spacing.lg }}>
           <PrimaryButton
             testID="logout-btn"
-            title="Log out"
+            title={t("logout")}
             variant="secondary"
             onPress={logout}
           />
@@ -139,6 +179,9 @@ const styles = StyleSheet.create({
     flexDirection: "row", alignItems: "center", gap: 12,
     paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: Colors.borderLight,
   },
+  settingRowFeature: { paddingVertical: 14 },
+  settingIconWrap: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center" },
   settingText: { flex: 1, fontSize: 15, color: Colors.textPrimary, fontWeight: "600" },
+  settingSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
   emptyText: { color: Colors.textSecondary, textAlign: "center", paddingVertical: Spacing.md },
 });
