@@ -158,6 +158,8 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
     borderRadius: Radii.xl,
     padding: Spacing.lg,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
     ...Shadows.card,
   },
   btn: {

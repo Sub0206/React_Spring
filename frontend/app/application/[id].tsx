@@ -98,6 +98,37 @@ export default function ApplicationSummary() {
     }
   };
 
+  // "Approve & Disburse" — approve then immediately fund in one flow
+  const approveAndDisburse = async () => {
+    setActioning("approve");
+    try {
+      await api(`/applications/${id}/approve`, { method: "POST" });
+      await api(`/applications/${id}/fund`, { method: "POST" });
+      Alert.alert("Loan funded", "Approved and disbursed successfully.");
+      router.replace("/(tabs)/loans");
+    } catch (e: any) {
+      Alert.alert("Error", e.message);
+      await load();
+    } finally {
+      setActioning("");
+    }
+  };
+
+  // "Fund Later" — approve only; application stays in Pending Requests as "Ready to Fund"
+  const approveFundLater = async () => {
+    setActioning("fund");
+    try {
+      await api(`/applications/${id}/approve`, { method: "POST" });
+      Alert.alert("Approved — Ready to Fund", "You can disburse this loan later from the Pending Requests list.");
+      router.replace("/(tabs)/applications");
+    } catch (e: any) {
+      Alert.alert("Error", e.message);
+      await load();
+    } finally {
+      setActioning("");
+    }
+  };
+
   const confirmReject = async () => {
     if (!rejectReason.trim()) {
       Alert.alert("Reason required", "Please add a short reason for rejection.");
@@ -164,7 +195,7 @@ export default function ApplicationSummary() {
         contentContainerStyle={{
           padding: Spacing.lg,
           // extra bottom padding = safe-area inset + action bar height + breathing room
-          paddingBottom: Math.max(insets.bottom, 12) + (showActions ? 96 : showFund || showLoanTrack ? 110 : 24),
+          paddingBottom: Math.max(insets.bottom, 12) + (showActions ? 148 : showFund || showLoanTrack ? 110 : 24),
         }}
       >
         <Text style={styles.h1}>Application summary</Text>
@@ -301,27 +332,39 @@ export default function ApplicationSummary() {
       {(showActions || showFund || showLoanTrack) && (
         <View style={[styles.actionBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
           {showActions && (
-            <View style={{ flexDirection: "row", gap: Spacing.sm }}>
-              <View style={{ flex: 1 }}>
-                <PrimaryButton
-                  testID="reject-btn"
-                  title="Reject"
-                  variant="danger"
-                  loading={actioning === "reject"}
-                  disabled={actioning !== ""}
-                  onPress={() => setRejectOpen(true)}
-                />
+            <View>
+              <View style={{ flexDirection: "row", gap: Spacing.sm }}>
+                <View style={{ flex: 1 }}>
+                  <PrimaryButton
+                    testID="reject-btn"
+                    title="Reject"
+                    variant="danger"
+                    loading={actioning === "reject"}
+                    disabled={actioning !== ""}
+                    onPress={() => setRejectOpen(true)}
+                  />
+                </View>
+                <View style={{ flex: 1.35 }}>
+                  <PrimaryButton
+                    testID="approve-disburse-btn"
+                    title="Approve & Disburse"
+                    variant="success"
+                    loading={actioning === "approve"}
+                    disabled={actioning !== ""}
+                    onPress={approveAndDisburse}
+                  />
+                </View>
               </View>
-              <View style={{ flex: 1 }}>
-                <PrimaryButton
-                  testID="approve-btn"
-                  title="Approve"
-                  variant="success"
-                  loading={actioning === "approve"}
-                  disabled={actioning !== ""}
-                  onPress={() => runAction("approve", "approve")}
-                />
-              </View>
+              <TouchableOpacity
+                testID="fund-later-btn"
+                onPress={approveFundLater}
+                disabled={actioning !== ""}
+                activeOpacity={0.75}
+                style={styles.fundLaterBtn}
+              >
+                <Ionicons name="time-outline" size={15} color={Colors.primary} />
+                <Text style={styles.fundLaterTxt}>Fund later · keep in Pending Requests</Text>
+              </TouchableOpacity>
             </View>
           )}
           {showFund && (
@@ -465,6 +508,15 @@ const styles = StyleSheet.create({
     paddingVertical: 12, paddingHorizontal: 16, minHeight: 48, ...Shadows.button,
   },
   trackBtnTitle: { color: "#fff", fontWeight: "800", fontSize: 14.5, letterSpacing: 0.3 },
+
+  // Ghost Fund Later button (secondary action under Approve & Disburse)
+  fundLaterBtn: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+    marginTop: 10, paddingVertical: 10, paddingHorizontal: 12,
+    backgroundColor: Colors.primary + "10", borderRadius: Radii.md,
+    borderWidth: 1, borderColor: Colors.primary + "33",
+  },
+  fundLaterTxt: { color: Colors.primary, fontWeight: "700", fontSize: 13, letterSpacing: 0.2 },
 
   modalBackdrop: { flex: 1, backgroundColor: "rgba(15,23,42,0.55)", justifyContent: "flex-end" },
   modalSheet: { backgroundColor: Colors.surface, padding: Spacing.lg, borderTopLeftRadius: Radii.xl, borderTopRightRadius: Radii.xl },

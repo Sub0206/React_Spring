@@ -91,7 +91,7 @@ export default function RootLayout() {
         <I18nProvider>
           <AuthProvider>
             <DialogProvider>
-              <StatusBar style="dark" />
+              <StatusBar style="light" />
               <AuthGate />
             </DialogProvider>
           </AuthProvider>

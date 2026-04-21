@@ -318,7 +318,57 @@ frontend:
             OTP:   returned as `demo_otp` in /api/auth/send-otp response.
           Do not modify backend code. Update status_history with agent="testing" on pass/fail.
 
-  - task: "UX polish — notifications header + compact Loan Track CTA (iteration 20)"
+  - task: "Fund Later flow + Executive Dark Navy theme (iteration 21)"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/theme.ts, /app/frontend/app/application/[id].tsx, /app/frontend/app/(tabs)/applications.tsx, /app/frontend/src/ui.tsx, /app/frontend/app/_layout.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Iteration 21 — MAJOR feature + theme upgrade.
+
+          A) Fund Later flow (Application Summary `/app/application/[id].tsx`)
+             • Primary CTA renamed "Approve" → "Approve & Disburse" (flex 1.35) — runs
+               POST /approve + POST /fund back-to-back for a one-tap disbursal.
+             • New secondary ghost CTA "Fund later · keep in Pending Requests" below —
+               calls POST /approve only, then navigates to /(tabs)/applications so the
+               user sees their application back in the Pending Requests list with the
+               new "READY TO FUND" badge.
+             • Reject flow retained (flex 1) on the left of the primary row.
+             • Bottom action bar safe-area padding recomputed for 2-row layout (148 px).
+             • testIDs: `reject-btn`, `approve-disburse-btn`, `fund-later-btn`.
+
+          B) Loan Requests tab (`/app/(tabs)/applications.tsx`)
+             • "Pending" filter now merges `status=pending` + `status=approved` so
+               Fund-Later loans appear in the Pending Requests list.
+             • Status badge logic updated:
+                 pending  → amber "AWAITING REVIEW"
+                 approved → teal  "READY TO FUND"  (was merged into Funded before)
+                 funded   → green "FUNDED"
+                 rejected → red   "REJECTED"
+
+          C) Executive Dark Navy theme (`/app/frontend/src/theme.ts`)
+             • Full dark palette: layered navy surfaces (#0B1220 → #131C2E → #1B273F),
+               electric royal blue #3B82F6 primary, emerald #10B981 secondary/success,
+               amber #F59E0B warning, crimson #EF4444 danger, cyan #22D3EE info, teal
+               #14B8A6 accent, amber-400 #FBBF24 gold.
+             • Text: slate-50 primary, slate-300 secondary, slate-400 muted.
+             • Borders: slate-700 / 243049 / 1D2740 for layered depth.
+             • Shadows retuned for dark (black 25/35% opacity + primary blue CTA glow).
+             • Added 1px `borderLight` outline to the base `Card` component in ui.tsx
+               so cards remain crisp on the dark bg even when shadows are subtle.
+             • StatusBar switched from "dark" → "light" in `_layout.tsx`.
+
+          Verified via playwright 390×844 screenshots:
+            • Login, Dashboard, Requests list (AWAITING REVIEW + READY TO FUND + FUNDED
+              + REJECTED badges), Application Summary (with Approve & Disburse + Fund
+              later CTAs), Notifications empty state — all render perfectly in dark mode.
+            • fund-later-btn and approve-disburse-btn testIDs confirmed on DOM.
+
     implemented: true
     working: true
     file: "/app/frontend/app/notifications.tsx, /app/frontend/app/application/[id].tsx, /app/frontend/src/theme.ts"

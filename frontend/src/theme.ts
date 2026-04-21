@@ -1,86 +1,100 @@
 import { Platform } from "react-native";
 
-// Premium fintech palette — Royal Blue, Emerald, Gold, Crimson
-export const Colors = {
-  // Primary — Royal Blue
-  primary: "#1E40AF",
-  primaryDark: "#1E3A8A",
-  primaryLight: "#3B82F6",
-  primarySoft: "#DBEAFE",
+// LendIQ – Executive Dark Navy (premium fintech theme, iteration 21)
+// Layered dark surfaces, electric royal-blue accents, emerald/teal highlights.
+// Tokens are preserved 1:1 with the prior light theme so all screens inherit
+// the new palette without code changes.
 
-  // Secondary — Emerald Green
+export const Colors = {
+  // Primary — Electric Royal Blue (pops on dark bg)
+  primary: "#3B82F6",          // blue-500
+  primaryDark: "#2563EB",      // blue-600
+  primaryLight: "#60A5FA",     // blue-400
+  primarySoft: "#1E3A5F",      // deep blue tint for translucent cards
+
+  // Secondary — Emerald
   secondary: "#10B981",
   secondaryDark: "#059669",
-  secondarySoft: "#D1FAE5",
+  secondarySoft: "#0B3F2E",
 
-  // Gold accent for premium feel
-  gold: "#D4AF37",
-  goldSoft: "#FEF3C7",
+  // Gold — premium highlight (use sparingly)
+  gold: "#FBBF24",
+  goldSoft: "#78350F",
 
-  // Success — Elegant Emerald
-  success: "#059669",
-  successSoft: "#D1FAE5",
+  // Success — Emerald (matches secondary)
+  success: "#10B981",
+  successSoft: "#0B3F2E",
 
-  // Warning — warm amber
-  warning: "#D97706",
-  warningSoft: "#FEF3C7",
+  // Warning — Amber
+  warning: "#F59E0B",
+  warningSoft: "#7C4A10",
 
-  // Danger / Overdue — Premium Crimson
-  danger: "#DC2626",
-  dangerDark: "#B91C1C",
-  dangerSoft: "#FEE2E2",
+  // Danger / Overdue — Crimson
+  danger: "#EF4444",
+  dangerDark: "#DC2626",
+  dangerSoft: "#5A1A1A",
 
-  // Info — deep cyan
-  info: "#0EA5E9",
-  infoSoft: "#E0F2FE",
+  // Info — Cyan
+  info: "#22D3EE",
+  infoSoft: "#113F4B",
 
-  // Accent — deep teal for premium highlights (use sparingly)
-  accent: "#0D9488",
-  accentSoft: "#CCFBF1",
+  // Accent — Deep Teal (premium callouts)
+  accent: "#14B8A6",
+  accentSoft: "#0F3D3A",
 
-  // Backgrounds — soft layered surface
-  bg: "#F8FAFC",
-  bgAlt: "#F1F5F9",
-  surface: "#FFFFFF",
-  surfaceAlt: "#FAFBFE",
+  // Backgrounds — layered dark navy
+  bg: "#0B1220",           // page background (deepest)
+  bgAlt: "#131C2E",        // secondary panel / inline tiles
+  surface: "#1B273F",      // primary card surface
+  surfaceAlt: "#243049",   // elevated / selected card
 
   // Text hierarchy
-  textPrimary: "#0F172A",
-  textSecondary: "#475569",
-  textMuted: "#94A3B8",
+  textPrimary: "#F8FAFC",      // slate-50
+  textSecondary: "#CBD5E1",    // slate-300
+  textMuted: "#94A3B8",        // slate-400
 
   // Borders / dividers
-  border: "#E2E8F0",
-  borderLight: "#F1F5F9",
-  borderSubtle: "#EDF2F7",
+  border: "#334155",           // slate-700 (strongest)
+  borderLight: "#263149",      // subtle card border
+  borderSubtle: "#1D2740",     // hairline divider
 };
 
 export const Spacing = { xs: 4, sm: 8, md: 16, lg: 24, xl: 32, xxl: 48 };
 export const Radii = { sm: 8, md: 14, lg: 20, xl: 28, pill: 999 };
 
-const shadow = (y: number, blur: number, alpha: number, color = "15,23,42") => (
-  Platform.OS === "web"
-    ? { boxShadow: `0px ${y}px ${blur}px rgba(${color},${alpha})` }
-    : { shadowColor: "#0F172A", shadowOffset: { width: 0, height: y }, shadowOpacity: alpha, shadowRadius: blur, elevation: Math.round(y / 2) }
-);
+// Shadows on a dark bg are mostly invisible — we add a subtle inner-glow-ish
+// effect on web + keep native shadows for iOS/Android depth. Each card should
+// also carry `borderWidth: 1, borderColor: Colors.borderLight` for crispness
+// (see src/ui.tsx Card).
+const webShadow = (y: number, blur: number, alpha: number) =>
+  ({ boxShadow: `0px ${y}px ${blur}px rgba(0,0,0,${alpha})` });
+
+const nativeShadow = (y: number, blur: number, alpha: number) => ({
+  shadowColor: "#000000",
+  shadowOffset: { width: 0, height: y },
+  shadowOpacity: alpha,
+  shadowRadius: blur,
+  elevation: Math.round(y / 2),
+});
+
+const shadow = (y: number, blur: number, alpha: number) =>
+  Platform.OS === "web" ? webShadow(y, blur, alpha) : nativeShadow(y, blur, alpha);
 
 export const Shadows = {
-  // Subtle floating card
-  card: shadow(2, 10, 0.05),
-  // Elevated / hover / prominent
-  cardHigh: shadow(8, 24, 0.08),
-  // Primary CTA buttons
-  button: Platform.OS === "web"
-    ? { boxShadow: "0px 8px 20px rgba(30,64,175,0.25)" }
-    : { shadowColor: "#1E40AF", shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.25, shadowRadius: 14, elevation: 4 },
-  // Danger CTA / overdue card accent
-  danger: Platform.OS === "web"
-    ? { boxShadow: "0px 6px 16px rgba(220,38,38,0.18)" }
-    : { shadowColor: "#DC2626", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.18, shadowRadius: 10, elevation: 3 },
-  // Gold — premium highlight
-  gold: Platform.OS === "web"
-    ? { boxShadow: "0px 6px 16px rgba(212,175,55,0.22)" }
-    : { shadowColor: "#D4AF37", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.22, shadowRadius: 10, elevation: 3 },
+  card: shadow(3, 14, 0.25),
+  cardHigh: shadow(10, 30, 0.35),
+  button:
+    Platform.OS === "web"
+      ? { boxShadow: "0px 8px 24px rgba(59,130,246,0.45)" }
+      : { shadowColor: "#3B82F6", shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.45, shadowRadius: 14, elevation: 6 },
+  danger:
+    Platform.OS === "web"
+      ? { boxShadow: "0px 6px 18px rgba(239,68,68,0.35)" }
+      : { shadowColor: "#EF4444", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.35, shadowRadius: 12, elevation: 4 },
+  gold:
+    Platform.OS === "web"
+      ? { boxShadow: "0px 6px 18px rgba(251,191,36,0.32)" }
+      : { shadowColor: "#FBBF24", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.32, shadowRadius: 12, elevation: 4 },
 };
 
 export const Brand = {

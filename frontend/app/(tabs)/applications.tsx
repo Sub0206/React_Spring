@@ -36,10 +36,10 @@ function riskMeta(risk?: string | null) {
 }
 
 function statusMeta(status: string) {
-  // Treat legacy "approved" as the same final state as "funded"
-  if (status === "pending")  return { label: "AWAITING",  color: Colors.warning, bg: Colors.warningSoft };
-  if (status === "approved" || status === "funded") return { label: "FUNDED", color: Colors.success, bg: Colors.successSoft };
-  if (status === "rejected") return { label: "REJECTED",  color: Colors.danger,  bg: Colors.dangerSoft };
+  if (status === "pending")  return { label: "AWAITING REVIEW", color: Colors.warning, bg: Colors.warningSoft };
+  if (status === "approved") return { label: "READY TO FUND",   color: Colors.accent,  bg: Colors.accentSoft };
+  if (status === "funded")   return { label: "FUNDED",          color: Colors.success, bg: Colors.successSoft };
+  if (status === "rejected") return { label: "REJECTED",        color: Colors.danger,  bg: Colors.dangerSoft };
   return { label: status.toUpperCase(), color: Colors.textMuted, bg: Colors.bgAlt };
 }
 
@@ -57,18 +57,21 @@ export default function Applications() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      // If user picks "funded", fetch BOTH approved+funded to remove the old duplication.
-      if (filter === "funded") {
-        const [a, f] = await Promise.all([
+      if (filter === "pending") {
+        // Pending filter shows BOTH status=pending (awaiting review)
+        // AND status=approved (Ready to Fund) so Fund-Later requests are visible.
+        const [p, a] = await Promise.all([
+          api<App[]>(`/applications?status=pending`).catch(() => []),
           api<App[]>(`/applications?status=approved`).catch(() => []),
-          api<App[]>(`/applications?status=funded`).catch(() => []),
         ]);
-        // De-dup by application_id
         const map = new Map<string, App>();
-        [...a, ...f].forEach(x => map.set(x.application_id, x));
+        [...p, ...a].forEach(x => map.set(x.application_id, x));
         setItems(Array.from(map.values()).sort(
           (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
         ));
+      } else if (filter === "funded") {
+        const data = await api<App[]>(`/applications?status=funded`);
+        setItems(data);
       } else {
         const data = await api<App[]>(`/applications?status=${filter}`);
         setItems(data);
