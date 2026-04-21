@@ -3299,6 +3299,196 @@ async def support_chat(body: ChatRequest, current: UserPublic = Depends(get_curr
     ), "source": "fallback"}
 
 
+# ---------------------------------------------------------------------------
+# AI Business Assistant (data-aware) — /api/assistant/query
+# ---------------------------------------------------------------------------
+class AssistantRequest(BaseModel):
+    question: str
+    history: Optional[List[Dict[str, str]]] = None
+
+
+async def _build_assistant_context(user_id: str) -> Dict[str, Any]:
+    """Compact snapshot of this lender's live portfolio used to ground the LLM."""
+    now = datetime.now(timezone.utc)
+    today = now.date()
+    week_ago = today - timedelta(days=7)
+    month_start = today.replace(day=1)
+
+    # Pull: prefer lender-owned; fallback to all for demo tenants
+    loans = await db.loans.find({"funded_by": user_id}, {"_id": 0, "proof_image_base64": 0}).to_list(500)
+    if not loans:
+        loans = await db.loans.find({}, {"_id": 0, "proof_image_base64": 0}).to_list(500)
+    clients = await db.clients.find({}, {"_id": 0, "proof_image_base64": 0}).to_list(500)
+    apps = await db.applications.find({}, {"_id": 0}).to_list(500)
+
+    def _as_dt(v):
+        if not v: return None
+        if isinstance(v, datetime): return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+        try:
+            dt = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+
+    # Classify loans + overdue
+    overdue_loans: List[Dict[str, Any]] = []
+    ph = {"on_track": 0, "overdue": 0, "at_risk": 0, "completed": 0, "defaulted": 0}
+    active_count = 0
+    total_funded = 0.0
+    for l in loans:
+        total_funded += float(l.get("principal") or 0)
+        if l.get("status") == "completed":
+            ph["completed"] += 1; continue
+        if l.get("status") == "defaulted":
+            ph["defaulted"] += 1; continue
+        active_count += 1
+        has_overdue = False; has_late = False; days_late = 0
+        for s in (l.get("repayment_schedule") or []):
+            due = _as_dt(s.get("due_date"))
+            if s.get("status") != "paid" and due and due < now:
+                has_overdue = True
+                days_late = max(days_late, (now.date() - due.date()).days)
+            if s.get("status") == "paid" and s.get("was_late"):
+                has_late = True
+        if has_overdue:
+            ph["overdue"] += 1
+            c = next((c for c in clients if c.get("client_id") == l.get("client_id")), {})
+            overdue_loans.append({
+                "client_name": c.get("name", "Unknown"),
+                "loan_id": l.get("loan_id"),
+                "principal": l.get("principal"),
+                "days_late": days_late,
+            })
+        elif has_late:
+            ph["at_risk"] += 1
+        else:
+            ph["on_track"] += 1
+
+    # Inflow/outflow this month (from repayment_schedule paid_at + loan created)
+    inflow_month = 0.0; outflow_month = 0.0
+    inflow_today = 0.0; outflow_today = 0.0
+    inflow_week = 0.0; outflow_week = 0.0
+    for l in loans:
+        cd = _as_dt(l.get("created_at") or l.get("funded_at"))
+        amt = float(l.get("principal") or 0)
+        if cd:
+            if cd.date() >= month_start: outflow_month += amt
+            if cd.date() >= week_ago:   outflow_week += amt
+            if cd.date() == today:      outflow_today += amt
+        for s in (l.get("repayment_schedule") or []):
+            if s.get("status") == "paid":
+                pd = _as_dt(s.get("paid_at"))
+                a = float(s.get("amount") or 0)
+                if pd:
+                    if pd.date() >= month_start: inflow_month += a
+                    if pd.date() >= week_ago:    inflow_week += a
+                    if pd.date() == today:       inflow_today += a
+
+    # Clients summary (trim PII — no mobile, pan, aadhaar)
+    clients_brief = []
+    for c in clients[:50]:
+        clients_brief.append({
+            "name": c.get("name"),
+            "risk_color": c.get("risk_color"),
+            "cibil_score": c.get("cibil_score"),
+        })
+
+    pending = [a for a in apps if a.get("status") == "pending"]
+    approved_ready = [a for a in apps if a.get("status") == "approved"]
+    funded_this_month = []
+    for a in apps:
+        if a.get("status") != "funded": continue
+        d = _as_dt(a.get("decided_at") or a.get("created_at"))
+        if d and d.date() >= month_start:
+            funded_this_month.append(a)
+
+    return {
+        "today": today.isoformat(),
+        "portfolio": {
+            "total_funded_inr": round(total_funded, 2),
+            "active_loans": active_count,
+            "overdue_count": ph["overdue"],
+            "at_risk_count": ph["at_risk"],
+            "on_track_count": ph["on_track"],
+            "completed_count": ph["completed"],
+            "defaulted_count": ph["defaulted"],
+            "pending_approvals": len(pending),
+            "approved_awaiting_funding": len(approved_ready),
+            "loans_funded_this_month": len(funded_this_month),
+        },
+        "cashflow": {
+            "inflow_today": round(inflow_today, 2), "outflow_today": round(outflow_today, 2),
+            "inflow_this_week": round(inflow_week, 2), "outflow_this_week": round(outflow_week, 2),
+            "inflow_this_month": round(inflow_month, 2), "outflow_this_month": round(outflow_month, 2),
+        },
+        "overdue_loans": overdue_loans[:20],
+        "clients": clients_brief,
+    }
+
+
+@api.post("/assistant/query")
+async def assistant_query(body: AssistantRequest, current: UserPublic = Depends(get_current_user)):
+    """Data-aware AI assistant for the lender. Uses Emergent LLM (GPT-4o-mini)
+    grounded with a compact snapshot of the lender's portfolio."""
+    q = (body.question or "").strip()
+    if not q:
+        return {"answer": "Ask me anything — e.g. 'What is my inflow today?'", "source": "empty"}
+
+    try:
+        ctx = await _build_assistant_context(current.user_id)
+    except Exception as e:
+        logger.warning(f"assistant ctx build failed: {e}")
+        ctx = {}
+
+    system_prompt = (
+        "You are **LendIQ Business Assistant**, an AI analyst for a lender's portfolio inside the LendIQ app. "
+        "Answer strictly using the JSON `DATA` block provided — never invent numbers. All amounts are in INR (₹). "
+        "Style: Start with a ONE-LINE short answer (bold if useful). Then 2-5 short bullet points with exact numbers. "
+        "Use markdown bold `**` for key figures. Be concise, professional. "
+        "If the question asks about a specific client, search `DATA.clients` and `DATA.overdue_loans` for a case-insensitive partial match on name. "
+        "If you don't have enough info to answer, say so clearly and suggest what the user should check in the app.\n\n"
+        "NEVER reveal internal IDs, PAN, Aadhaar or any PII. Use names only.\n"
+    )
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"asst-{current.user_id}",
+            system_message=system_prompt,
+        ).with_model("openai", "gpt-4o-mini")
+
+        convo_hist = ""
+        if body.history:
+            for m in body.history[-6:]:
+                role = "User" if m.get("role") == "user" else "Assistant"
+                txt = (m.get("text") or "").strip()
+                if txt:
+                    convo_hist += f"{role}: {txt}\n"
+        data_json = json.dumps(ctx, default=str)[:6000]
+        prompt = f"DATA:\n{data_json}\n\n{convo_hist}User: {q}\nAssistant:"
+        resp = await chat.send_message(UserMessage(text=prompt))
+        answer = (resp or "").strip()
+        if not answer:
+            raise ValueError("empty")
+        return {"answer": answer, "source": "ai"}
+    except Exception as e:
+        logger.warning(f"assistant LLM failed: {e}")
+        # Deterministic fallback — still informative
+        p = ctx.get("portfolio") or {}
+        c = ctx.get("cashflow") or {}
+        lines = [
+            f"**Quick snapshot** (as of {ctx.get('today', '-')}):",
+            f"• Total funded: ₹{p.get('total_funded', 0):,.0f}",
+            f"• Active loans: {p.get('active_loans_count', 0)}",
+            f"• Overdue now: {p.get('overdue_count', 0)}",
+            f"• Pending approvals: {p.get('pending_approvals', 0)}",
+            f"• Ready to fund: {p.get('approved_awaiting_funding', 0)}",
+            f"• Inflow today: ₹{c.get('inflow_today', 0):,.0f} · Outflow today: ₹{c.get('outflow_today', 0):,.0f}",
+            f"• Inflow this month: ₹{c.get('inflow_this_month', 0):,.0f}",
+        ]
+        return {"answer": "\n".join(lines), "source": "fallback"}
+
+
 
 
 # ---------- Seed data ----------

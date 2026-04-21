@@ -318,7 +318,90 @@ frontend:
             OTP:   returned as `demo_otp` in /api/auth/send-otp response.
           Do not modify backend code. Update status_history with agent="testing" on pass/fail.
 
-  - task: "Fund Later flow + Executive Dark Navy theme (iteration 21)"
+  - task: "Iteration 22 — Theme switcher + Passcode/Biometric + AI Business Assistant"
+    implemented: true
+    working: true
+    file: "/app/frontend/src/theme.ts, themeContext.tsx, app/settings/appearance.tsx, app/passcode.tsx, app/settings/security.tsx, src/passcode.ts, app/assistant.tsx, /app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Major upgrade delivering three premium features in a single iteration:
+
+          A) THEME SWITCHER (Light / Dark / System)
+             • `theme.ts` now exports DARK + LIGHT palettes and a live mutable `Colors`
+               object. `applyTheme(mode, systemIsDark)` swaps the palette in-place and
+               rebuilds `Shadows`.
+             • New `src/themeContext.tsx` — `ThemeProvider` that persists choice to
+               AsyncStorage (`lendiq_theme_mode`), reacts to OS theme changes when
+               in "system" mode, and emits a `remountKey` to force a clean re-render
+               of the whole app so all prebuilt StyleSheets pick up the new tokens.
+             • `_layout.tsx` wraps the app in `ThemeProvider` + a `ThemedApp` wrapper
+               with `key={remountKey}` and StatusBar that flips `light`/`dark`.
+             • New screen `/app/settings/appearance.tsx` — clean radio rows for
+               Match system / Light / Dark + a live preview card showing TOTAL FUNDED
+               hero and Portfolio Health tiles in the selected theme.
+             • Profile row "Appearance" added.
+
+          B) PASSCODE + BIOMETRIC (secure app lock)
+             • New `src/passcode.ts` — SHA-256 hashing (`expo-crypto`), stored in
+               `expo-secure-store` on native + AsyncStorage fallback on web.
+               Verify tracks failures; after 5 wrong attempts a 30-second lockout
+               kicks in that doubles on repeat.
+             • Biometric via `expo-local-authentication` (fingerprint / Face ID /
+               Iris). `setBiometricEnabled()` toggle persisted in AsyncStorage.
+             • New screen `/app/passcode.tsx` that matches the provided reference
+               mockup: big "Enter passcode" title, 4 tap boxes, shake + red border
+               on error, `Forgot Passcode?` link, `Continue with {Biometric}` CTA
+               (auto-prompts on open if enabled), Verify button. Supports three
+               modes via params: verify / create / confirm.
+             • New screen `/app/settings/security.tsx` — manages Create/Change
+               passcode, Biometric toggle (disabled on web), Remove passcode,
+               and an "how it works" card.
+             • Forgot-passcode flow: signs the user out + routes back to OTP.
+             • Profile row "Security & Passcode" added.
+
+          C) AI BUSINESS ASSISTANT (data-aware)
+             • New backend route `POST /api/assistant/query` (auth required).
+             • `_build_assistant_context()` pulls a compact, PII-safe snapshot of the
+               live portfolio: total_funded, active_loans, portfolio_health counts
+               (on_track / overdue / at_risk / completed / defaulted), pending_approvals,
+               approved_awaiting_funding, loans_funded_this_month, cashflow (inflow/
+               outflow today/week/month), overdue_loans[] with client names + days
+               late, and a 50-client brief (name + risk only — never PAN/Aadhaar).
+             • Routed through Emergent LLM (OpenAI gpt-4o-mini) with a strict system
+               prompt: answer only from DATA, bold headline + 2-5 bullets, markdown
+               bold for numbers, INR currency. Deterministic fallback if LLM fails.
+             • New screen `/app/assistant.tsx` — premium dark chat UI with:
+                 - ✨ header "Business Assistant — Ask about your portfolio, clients, EMIs & cashflow"
+                 - AI-tagged bot bubbles with markdown-bold rendering
+                 - Animated 3-dot typing indicator
+                 - 6 horizontal-scroll quick prompt chips (What is my inflow today? /
+                   Which loans are overdue today? / Loans funded this month? /
+                   Show top 5 risky borrowers / Pending approvals count? /
+                   Total active loans?)
+                 - Pill input + sparkle send button
+                 - Last-6 messages sent for multi-turn context
+             • Profile row "AI Assistant" added.
+
+          Smoke tests via curl with seeded lender 9876543210 — all return correct
+          live numbers:
+            • "Total active loans" → 14 active, ₹1,312,600 funded, 4 overdue, 6 at-risk.
+            • "Which loans are overdue today?" → 4 names + ₹ amount + days late.
+            • "Loans funded this month?" → 25 (matches seed).
+
+          Verified on 390×844 via playwright:
+            • Profile tab shows all new rows.
+            • Appearance screen toggles between Dark/Light/System with live preview.
+            • Security screen shows Create passcode (NOT SET pill) + Biometric toggle
+              (disabled on web) + How-it-works info.
+            • Assistant opens with suggestion chips, overdue query returns bullet list
+              with real names and amounts.
+          Please regression-test all three in a subsequent pass.
+
     implemented: true
     working: true
     file: "/app/frontend/src/theme.ts, /app/frontend/app/application/[id].tsx, /app/frontend/app/(tabs)/applications.tsx, /app/frontend/src/ui.tsx, /app/frontend/app/_layout.tsx"

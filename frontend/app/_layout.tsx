@@ -9,6 +9,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { StatusBar } from "expo-status-bar";
 import { Colors } from "../src/theme";
+import { ThemeProvider, useTheme } from "../src/themeContext";
 import { View, ActivityIndicator } from "react-native";
 
 function AuthGate() {
@@ -77,10 +78,29 @@ function AuthGate() {
       <Stack.Screen name="settings/language" options={{ presentation: "modal" }} />
       <Stack.Screen name="settings/audit" options={{ presentation: "card" }} />
       <Stack.Screen name="settings/help" options={{ presentation: "card" }} />
+      <Stack.Screen name="settings/appearance" options={{ presentation: "card" }} />
+      <Stack.Screen name="settings/security" options={{ presentation: "card" }} />
       <Stack.Screen name="subscription" options={{ presentation: "card" }} />
       <Stack.Screen name="overdue" options={{ presentation: "card" }} />
       <Stack.Screen name="notifications" options={{ presentation: "card" }} />
+      <Stack.Screen name="passcode" options={{ presentation: "card", gestureEnabled: false }} />
+      <Stack.Screen name="assistant" options={{ presentation: "card" }} />
     </Stack>
+  );
+}
+
+function ThemedApp() {
+  const { ready, remountKey, resolved } = useTheme();
+  if (!ready) {
+    return (
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: Colors.bg }} />
+    );
+  }
+  return (
+    <View style={{ flex: 1, backgroundColor: Colors.bg }} key={remountKey}>
+      <StatusBar style={resolved === "dark" ? "light" : "dark"} />
+      <AuthGate />
+    </View>
   );
 }
 
@@ -88,14 +108,15 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <I18nProvider>
-          <AuthProvider>
-            <DialogProvider>
-              <StatusBar style="light" />
-              <AuthGate />
-            </DialogProvider>
-          </AuthProvider>
-        </I18nProvider>
+        <ThemeProvider>
+          <I18nProvider>
+            <AuthProvider>
+              <DialogProvider>
+                <ThemedApp />
+              </DialogProvider>
+            </AuthProvider>
+          </I18nProvider>
+        </ThemeProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
