@@ -6,6 +6,7 @@ import { AuthProvider, useAuth } from "../src/auth";
 import { DialogProvider } from "../src/dialog";
 import { I18nProvider } from "../src/i18n";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { StatusBar } from "expo-status-bar";
 import { Colors } from "../src/theme";
 import { View, ActivityIndicator } from "react-native";
@@ -85,15 +86,17 @@ function AuthGate() {
 
 export default function RootLayout() {
   return (
-    <SafeAreaProvider>
-      <I18nProvider>
-        <AuthProvider>
-          <DialogProvider>
-            <StatusBar style="dark" />
-            <AuthGate />
-          </DialogProvider>
-        </AuthProvider>
-      </I18nProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <I18nProvider>
+          <AuthProvider>
+            <DialogProvider>
+              <StatusBar style="dark" />
+              <AuthGate />
+            </DialogProvider>
+          </AuthProvider>
+        </I18nProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }

@@ -25,6 +25,7 @@ type App = {
   };
   amount: number; purpose: string; term_months: number; interest_rate: number;
   status: string;
+  loan_id?: string;
   created_at?: string; requested_at?: string;
   decided_at?: string; decided_by?: string; decided_by_name?: string; decision_reason?: string;
   approved_amount?: number; approved_tenure?: number; approved_rate?: number;
@@ -145,7 +146,8 @@ export default function ApplicationSummary() {
 
   const isDecided = app.status === "approved" || app.status === "rejected" || app.status === "funded";
   const showActions = app.status === "pending";
-  const showFund = app.status === "approved";
+  const showFund = app.status === "approved" && !app.loan_id;
+  const showLoanTrack = app.status === "funded" && !!app.loan_id;
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
@@ -159,7 +161,15 @@ export default function ApplicationSummary() {
 
       <ScrollView contentContainerStyle={{ padding: Spacing.lg, paddingBottom: 160 }}>
         <Text style={styles.h1}>Application summary</Text>
-        <Text style={styles.h1Sub}>Review risk & confirm to {showFund ? "disburse the loan." : "create the loan."}</Text>
+        <Text style={styles.h1Sub}>
+          {showLoanTrack
+            ? "Loan is active. Track EMIs, mark payments & reschedule below."
+            : showFund
+              ? "Approved. Fund the loan to disburse and start the schedule."
+              : isDecided
+                ? "Decision recorded. Review the audit stamp below."
+                : "Review risk & confirm to create the loan."}
+        </Text>
 
         {/* Decision audit stamp (read-only) */}
         {isDecided && app.decided_at && (
@@ -281,7 +291,7 @@ export default function ApplicationSummary() {
       </ScrollView>
 
       {/* Action bar */}
-      {(showActions || showFund) && (
+      {(showActions || showFund || showLoanTrack) && (
         <View style={styles.actionBar}>
           {showActions && (
             <View style={{ flexDirection: "row", gap: Spacing.sm }}>
@@ -315,6 +325,23 @@ export default function ApplicationSummary() {
               disabled={actioning !== ""}
               onPress={() => runAction("fund", "fund")}
             />
+          )}
+          {showLoanTrack && (
+            <TouchableOpacity
+              testID="loan-track-btn"
+              onPress={() => app.loan_id && router.push({ pathname: "/loan/[id]", params: { id: app.loan_id } })}
+              activeOpacity={0.88}
+              style={styles.trackBtn}
+            >
+              <View style={styles.trackIconWrap}>
+                <Ionicons name="trending-up" size={18} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.trackBtnTitle}>Loan Track</Text>
+                <Text style={styles.trackBtnSub}>Repayment schedule · Mark paid · Reschedule · Rollback</Text>
+              </View>
+              <Ionicons name="arrow-forward" size={18} color="#fff" />
+            </TouchableOpacity>
           )}
         </View>
       )}
@@ -428,6 +455,20 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface, padding: Spacing.md, paddingBottom: Spacing.lg,
     borderTopWidth: 1, borderTopColor: Colors.borderLight,
   },
+
+  // Loan Track CTA
+  trackBtn: {
+    flexDirection: "row", alignItems: "center", gap: 12,
+    backgroundColor: Colors.primary, borderRadius: Radii.xl,
+    paddingVertical: 14, paddingHorizontal: 16, ...Shadows.card,
+  },
+  trackIconWrap: {
+    width: 38, height: 38, borderRadius: 19,
+    backgroundColor: "rgba(255,255,255,0.18)",
+    alignItems: "center", justifyContent: "center",
+  },
+  trackBtnTitle: { color: "#fff", fontWeight: "800", fontSize: 15, letterSpacing: 0.2 },
+  trackBtnSub: { color: "#E0E7FF", fontSize: 11, fontWeight: "600", marginTop: 2 },
 
   modalBackdrop: { flex: 1, backgroundColor: "rgba(15,23,42,0.55)", justifyContent: "flex-end" },
   modalSheet: { backgroundColor: Colors.surface, padding: Spacing.lg, borderTopLeftRadius: Radii.xl, borderTopRightRadius: Radii.xl },

@@ -229,6 +229,9 @@ class LoanApplication(BaseModel):
     approved_tenure: Optional[int] = None
     approved_rate: Optional[float] = None
     risk_factors_at_decision: Optional[List[str]] = None
+    # Populated on read for funded applications so the UI can deep-link
+    # into the repayment/loan-track screen.
+    loan_id: Optional[str] = None
 
 class RepaymentEntry(BaseModel):
     month: int
@@ -2328,6 +2331,12 @@ async def get_application(application_id: str, current: UserPublic = Depends(get
         ai = await run_ai_credit_score(doc)
         await db.applications.update_one({"application_id": application_id}, {"$set": ai})
         doc.update(ai)
+    # If this application has been funded, attach the linked loan_id so the
+    # client can deep-link into the loan-track / repayment screen.
+    if doc.get("status") in ("funded", "approved"):
+        ln = await db.loans.find_one({"application_id": application_id}, {"_id": 0, "loan_id": 1})
+        if ln and ln.get("loan_id"):
+            doc["loan_id"] = ln["loan_id"]
     return LoanApplication(**doc)
 
 @api.post("/applications/{application_id}/score", response_model=LoanApplication)
@@ -2650,6 +2659,22 @@ async def mark_read(notification_id: str, current: UserPublic = Depends(get_curr
 async def mark_all_read(current: UserPublic = Depends(get_current_user)):
     await db.notifications.update_many({"user_id": current.user_id}, {"$set": {"read": True}})
     return {"ok": True}
+
+
+@api.delete("/notifications/{notification_id}")
+async def delete_notification(notification_id: str, current: UserPublic = Depends(get_current_user)):
+    r = await db.notifications.delete_one(
+        {"notification_id": notification_id, "user_id": current.user_id}
+    )
+    if r.deleted_count == 0:
+        raise HTTPException(404, "Notification not found")
+    return {"ok": True, "deleted": 1}
+
+
+@api.delete("/notifications")
+async def clear_notifications(current: UserPublic = Depends(get_current_user)):
+    r = await db.notifications.delete_many({"user_id": current.user_id})
+    return {"ok": True, "deleted": r.deleted_count}
 
 # ---------- Dashboard ----------
 @api.get("/dashboard")

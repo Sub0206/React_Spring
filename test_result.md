@@ -228,6 +228,96 @@ backend:
         comment: "PASS. Verified on live backend with client cli_cd90671802ac: (a) approve with due_day=5, amount=100000, term=6, rate=12 → all 6 schedule due_dates land on the 5th (days: [5,5,5,5,5,5]). (b) approve WITHOUT due_day (term=3) → 30-day cadence preserved (gaps: [30, 30]). Backward-compatible."
 
 frontend:
+  - task: "Notification delete + Application loan_id linkage (iteration 19)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Iteration-19 backend regression — 19/19 PASS against live backend (lender 9876543210).
+
+          NOTIFICATIONS (DELETE endpoints):
+            • A. GET /api/notifications (Bearer) → 200, list returned.
+            • Seeded 3 notifications directly into db.notifications for the authenticated
+              lender (user_77a19af2901f) to exercise delete flow.
+            • B. DELETE /api/notifications/{NID} (Bearer) → 200 {"ok":true,"deleted":1}.
+            • C. GET /api/notifications → 200, NID absent from list (count dropped 3→2).
+            • D. DELETE /api/notifications/{NID} again (already deleted) → 404.
+            • E. DELETE /api/notifications/does_not_exist_xyz (Bearer) → 404.
+            • E2. DELETE someone-else's notification id → 404 (scoping by user_id is
+              enforced — inserted a notification under user_id='user_other_xyz_test'
+              and confirmed current lender cannot delete it).
+            • F. DELETE /api/notifications/{any_id} WITHOUT Authorization → 401.
+            • G. DELETE /api/notifications (bulk wipe, Bearer) → 200
+              {"ok":true,"deleted":2} (remaining 2 seeded notifs wiped; deleted is a
+              non-negative int).
+            • H. GET /api/notifications immediately after bulk wipe → 200 [] (empty).
+            • I. DELETE /api/notifications WITHOUT Authorization → 401.
+
+          APPLICATION loan_id LINKAGE:
+            • J. GET /api/applications?status=funded (Bearer) → 200, 24 funded apps.
+              First funded app: FUNDED_APP_ID=app_4d192be38e.
+            • K1. GET /api/applications/app_4d192be38e (Bearer) → 200, loan_id='loan_525c072322'
+              (non-null, matches db.loans.application_id linkage rule).
+            • K2. GET /api/loans/loan_525c072322 (Bearer) → 200, loan.application_id == 'app_4d192be38e'.
+              Round-trip verified.
+            • L. GET /api/applications?status=pending → 200, 10 pending apps. First
+              pending: PENDING_APP_ID=app_e12f658787.
+            • M. GET /api/applications/app_e12f658787 (Bearer) → 200, loan_id is None
+              (null). Pending apps correctly do NOT have loan_id attached.
+            • N. GET /api/applications?status=rejected → 200, rejected apps exist.
+              First rejected: app_db5a7de7a7 → loan_id is None (correct).
+
+          REGRESSION SANITY:
+            • O. POST /api/auth/send-otp + /api/auth/verify-otp for 9876543210 → 200, JWT acquired.
+            • P. POST /api/notifications/read-all (Bearer) → 200 (existing endpoint untouched).
+            • Q. GET /api/dashboard (Bearer) → 200 with portfolio_health key present.
+
+          Code inspection confirms:
+            • DELETE /api/notifications/{notification_id} (server.py:2664-2671) — scoped by
+              {"notification_id": id, "user_id": current.user_id}, returns 404 if deleted_count==0.
+            • DELETE /api/notifications (server.py:2674-2677) — delete_many by user_id,
+              returns {"ok":true,"deleted":<count>} (always ≥0, never raises).
+            • GET /api/applications/{id} (server.py:2324-2340) — when status∈{"funded","approved"},
+              performs db.loans.find_one({"application_id":app_id}) and attaches loan.loan_id to
+              the response. For other statuses, loan_id stays None (default from Pydantic model
+              field at line 234: `loan_id: Optional[str] = None`).
+
+          No backend code was modified. Test script: /app/backend_test_iter19.py.
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Iteration 19 backend additions:
+          1) DELETE /api/notifications/{notification_id}
+             - Requires auth. Deletes only notifications scoped to current user
+               (`user_id` match). Returns {ok:true, deleted:1}.
+             - 404 when id not found OR the notification belongs to another user.
+          2) DELETE /api/notifications
+             - Requires auth. Wipes all notifications for the current user.
+               Returns {ok:true, deleted:<count>} where count is a non-negative int.
+          3) GET /api/applications/{application_id}
+             - LoanApplication model now has optional `loan_id` field.
+             - When the application status is "funded" or "approved" we look up
+               `loans.application_id == application_id` and attach the loan_id to
+               the response. This enables the client to deep-link into /loan/[id]
+               from the Application Summary screen.
+          Please verify:
+            • DELETE single notification → 200, and that re-GETting /notifications no longer includes the deleted id.
+            • DELETE /notifications clears everything for this user; GET /notifications afterward returns [].
+            • DELETE /notifications/{id} with someone else's id → 404.
+            • DELETE endpoints without auth → 401.
+            • GET /applications/{id} for a funded app → response includes `loan_id` matching `loans.application_id`.
+            • GET /applications/{id} for a pending app → `loan_id` is null / absent.
+          Credentials:
+            Phone: 9876543210
+            OTP:   returned as `demo_otp` in /api/auth/send-otp response.
+          Do not modify backend code. Update status_history with agent="testing" on pass/fail.
+
   - task: "Application Summary screen (iteration 18)"
     implemented: true
     working: true
@@ -692,15 +782,9 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Application Summary screen (iteration 18)"
-    - "Audit screen clean-up — PDF-only reconciliation (iteration 18)"
-    - "Coachmarks guided tour (iteration 17)"
-    - "AI Help & Support chatbot (iteration 18)"
-    - "Multi-language support"
-    - "Loan tabs + filters"
-    - "PDF one-click downloads"
+    - "Notification delete + Application loan_id linkage (iteration 19)"
   stuck_tasks: []
-  test_all: true
+  test_all: false
   test_priority: "high_first"
 
   - task: "Unicode ₹ PDF font fix (iteration 17)"
@@ -892,6 +976,35 @@ agent_communication:
         3) GET /api/dashboard/overdue → PASS (runtime list empty for current user; shape also confirmed via code inspection).
         4) POST /api/loans/{loan_id}/repay/{month} → PASS for (a) no override, (b) paid_date after due → was_late=true, (c) paid_date before due → was_late=false.
       NAMING NOTE (informational only, no action needed): review request used `override_date` / `is_delayed`, but backend implementation uses `paid_date` / `was_late`. Frontend already calls with matching names, so behavior is correct and consistent end-to-end.
+  - agent: "testing"
+    message: |
+      Iteration-19 backend regression — 19/19 PASS on live backend (localhost:8001, lender 9876543210).
+
+      NOTIFICATIONS (DELETE):
+        • Seeded 3 notifications directly into db.notifications for the lender (user_77a19af2901f) to exercise the delete flows.
+        • DELETE /api/notifications/{NID} (Bearer) → 200 {"ok":true,"deleted":1}. Subsequent GET /api/notifications no longer contains NID.
+        • Re-deleting the same NID → 404. Unknown id 'does_not_exist_xyz' → 404. Other-user's NID (seeded under user_other_xyz_test) → 404 — scoping by user_id is enforced.
+        • DELETE /api/notifications/{id} with NO Authorization → 401.
+        • DELETE /api/notifications (bulk wipe) with Bearer → 200 {"ok":true,"deleted":2}. Immediate GET /api/notifications → [].
+        • DELETE /api/notifications with NO Authorization → 401.
+
+      APPLICATION loan_id LINKAGE:
+        • GET /api/applications?status=funded → 200, 24 funded apps. First funded (app_4d192be38e) → detail GET includes loan_id='loan_525c072322' (non-null). GET /api/loans/loan_525c072322.application_id == 'app_4d192be38e'. Round-trip verified.
+        • GET /api/applications?status=pending → 200, 10 pending apps. First pending (app_e12f658787) → detail GET has loan_id=None. Pending apps correctly expose no loan linkage.
+        • GET /api/applications?status=rejected → 200, first rejected (app_db5a7de7a7) → detail GET has loan_id=None.
+
+      SANITY:
+        • auth send-otp + verify-otp for 9876543210 still works.
+        • POST /api/notifications/read-all (Bearer) → 200.
+        • GET /api/dashboard → 200 with portfolio_health key present.
+
+      Code-level confirmation:
+        • server.py:2664-2671 DELETE /notifications/{id}: delete_one filtered by {notification_id, user_id}; 404 if deleted_count==0 (handles both not-found and cross-user cases).
+        • server.py:2674-2677 DELETE /notifications: delete_many by user_id; returns {"ok":true,"deleted":count}, always ≥0, never raises.
+        • server.py:2324-2340 GET /applications/{id}: when status∈{"funded","approved"} looks up loans.application_id and attaches loan_id; otherwise loan_id stays None via Pydantic default (model line 234).
+
+      No backend code was modified. Test script: /app/backend_test_iter19.py.
+
       Test script: /app/backend_test.py. No backend code changes were made.
   - agent: "testing"
     message: |

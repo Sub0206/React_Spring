@@ -1,8 +1,12 @@
-import React, { useCallback, useState } from "react";
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl } from "react-native";
+import React, { useCallback, useRef, useState } from "react";
+import {
+  View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl,
+  Animated, Alert, Platform,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { Swipeable } from "react-native-gesture-handler";
 import { api } from "../src/api";
 import { Colors, Radii, Shadows, Spacing } from "../src/theme";
 
@@ -28,9 +32,24 @@ const typeColor: Record<string, string> = {
   alert: Colors.danger,
 };
 
+function relTime(iso: string) {
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "";
+  const diff = (Date.now() - t) / 1000;
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+  return new Date(t).toLocaleDateString();
+}
+
 export default function Notifications() {
   const [items, setItems] = useState<Notif[]>([]);
   const [loading, setLoading] = useState(false);
+  const swipeableRefs = useRef<Record<string, Swipeable | null>>({});
+  const closeAllSwipes = () => {
+    Object.values(swipeableRefs.current).forEach((r) => r?.close());
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -44,16 +63,98 @@ export default function Notifications() {
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const markAllRead = async () => {
-    await api("/notifications/read-all", { method: "POST" });
-    load();
+    // Optimistic
+    setItems((prev) => prev.map((n) => ({ ...n, read: true })));
+    try { await api("/notifications/read-all", { method: "POST" }); }
+    catch { load(); }
   };
 
   const markRead = async (id: string) => {
-    await api(`/notifications/${id}/read`, { method: "POST" });
     setItems((prev) => prev.map((n) => (n.notification_id === id ? { ...n, read: true } : n)));
+    try { await api(`/notifications/${id}/read`, { method: "POST" }); }
+    catch { /* noop */ }
+  };
+
+  const deleteOne = async (id: string) => {
+    // Optimistic: remove instantly for a snappy feel
+    setItems((prev) => prev.filter((n) => n.notification_id !== id));
+    swipeableRefs.current[id]?.close();
+    delete swipeableRefs.current[id];
+    try { await api(`/notifications/${id}`, { method: "DELETE" }); }
+    catch { load(); }
+  };
+
+  const clearAll = () => {
+    const doClear = async () => {
+      setItems([]);
+      try { await api("/notifications", { method: "DELETE" }); }
+      catch { load(); }
+    };
+    if (Platform.OS === "web") {
+      // window.confirm is sync on web
+      if (typeof window !== "undefined" && !window.confirm("Clear all notifications? This cannot be undone.")) return;
+      doClear();
+    } else {
+      Alert.alert(
+        "Clear all notifications?",
+        "This cannot be undone.",
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Clear all", style: "destructive", onPress: doClear },
+        ],
+      );
+    }
   };
 
   const unread = items.filter((n) => !n.read).length;
+  const hasAny = items.length > 0;
+  // Show "Clear all" once everything is read (or empty-but-previously-had) —
+  // that matches the spec: "After Mark All Read show Clear All".
+  const showClearAll = hasAny && unread === 0;
+
+  // ---------- Swipeable render actions ----------
+  const renderRightActions = (item: Notif, progress: Animated.AnimatedInterpolation<number>) => {
+    const trans = progress.interpolate({
+      inputRange: [0, 1],
+      outputRange: [80, 0],
+      extrapolate: "clamp",
+    });
+    return (
+      <Animated.View style={[styles.rightAction, { transform: [{ translateX: trans }] }]}>
+        <TouchableOpacity
+          testID={`notif-delete-${item.notification_id}`}
+          onPress={() => deleteOne(item.notification_id)}
+          style={styles.deleteBtn}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="trash" size={20} color="#fff" />
+          <Text style={styles.actionTxt}>Delete</Text>
+        </TouchableOpacity>
+      </Animated.View>
+    );
+  };
+
+  const renderLeftActions = (item: Notif, progress: Animated.AnimatedInterpolation<number>) => {
+    if (item.read) return null;
+    const trans = progress.interpolate({
+      inputRange: [0, 1],
+      outputRange: [-80, 0],
+      extrapolate: "clamp",
+    });
+    return (
+      <Animated.View style={[styles.leftAction, { transform: [{ translateX: trans }] }]}>
+        <TouchableOpacity
+          testID={`notif-markread-${item.notification_id}`}
+          onPress={() => { markRead(item.notification_id); swipeableRefs.current[item.notification_id]?.close(); }}
+          style={styles.readBtn}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="checkmark-done" size={20} color="#fff" />
+          <Text style={styles.actionTxt}>Read</Text>
+        </TouchableOpacity>
+      </Animated.View>
+    );
+  };
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -61,12 +162,19 @@ export default function Notifications() {
         <View style={{ flex: 1 }}>
           <Text style={styles.title}>Notifications</Text>
           <Text style={styles.subtitle}>
-            {unread > 0 ? `${unread} unread` : "All caught up"}
+            {hasAny ? (unread > 0 ? `${unread} unread` : "All caught up") : "No alerts right now"}
           </Text>
         </View>
         {unread > 0 && (
-          <TouchableOpacity testID="mark-all-read" onPress={markAllRead} style={styles.markAll}>
-            <Text style={styles.markAllText}>Mark all read</Text>
+          <TouchableOpacity testID="mark-all-read" onPress={markAllRead} style={styles.ghostBtn}>
+            <Ionicons name="checkmark-done" size={14} color={Colors.primary} />
+            <Text style={styles.ghostBtnText}>Mark all read</Text>
+          </TouchableOpacity>
+        )}
+        {showClearAll && (
+          <TouchableOpacity testID="clear-all" onPress={clearAll} style={styles.dangerBtn}>
+            <Ionicons name="trash" size={14} color={Colors.danger} />
+            <Text style={styles.dangerBtnText}>Clear all</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -75,32 +183,58 @@ export default function Notifications() {
         testID="notifications-list"
         data={items}
         keyExtractor={(i) => i.notification_id}
-        refreshControl={<RefreshControl refreshing={loading} onRefresh={load} />}
-        contentContainerStyle={{ padding: Spacing.lg, paddingBottom: Spacing.xxl }}
+        refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={Colors.primary} />}
+        contentContainerStyle={[
+          { padding: Spacing.lg, paddingBottom: Spacing.xxl },
+          items.length === 0 && { flex: 1, justifyContent: "center" },
+        ]}
         ListEmptyComponent={
           <View style={styles.empty}>
-            <Ionicons name="notifications-outline" size={60} color={Colors.textMuted} />
-            <Text style={styles.emptyTitle}>No notifications</Text>
-            <Text style={styles.emptyText}>You&apos;ll see updates here as you review loans.</Text>
+            <View style={styles.emptyIcon}>
+              <Ionicons name="notifications-off-outline" size={44} color={Colors.primary} />
+            </View>
+            <Text style={styles.emptyTitle}>No notifications available</Text>
+            <Text style={styles.emptyText}>You&apos;ll see updates here as applications & EMIs update.</Text>
           </View>
         }
         renderItem={({ item }) => (
-          <TouchableOpacity
-            testID={`notif-${item.notification_id}`}
-            onPress={() => markRead(item.notification_id)}
-            activeOpacity={0.9}
-            style={[styles.row, !item.read && styles.rowUnread]}
+          <Swipeable
+            ref={(ref) => { swipeableRefs.current[item.notification_id] = ref; }}
+            renderRightActions={(progress) => renderRightActions(item, progress)}
+            renderLeftActions={(progress) => renderLeftActions(item, progress)}
+            onSwipeableWillOpen={() => {
+              // Close other open swipeables
+              Object.entries(swipeableRefs.current).forEach(([id, r]) => {
+                if (id !== item.notification_id) r?.close();
+              });
+            }}
+            overshootLeft={false}
+            overshootRight={false}
+            friction={1.6}
+            rightThreshold={42}
+            leftThreshold={42}
           >
-            <View style={[styles.icon, { backgroundColor: typeColor[item.type] + "1A" }]}>
-              <Ionicons name={typeIcon[item.type] || "notifications"} size={18} color={typeColor[item.type]} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.notifTitle}>{item.title}</Text>
-              <Text style={styles.notifBody}>{item.body}</Text>
-            </View>
-            {!item.read && <View style={styles.dot} />}
-          </TouchableOpacity>
+            <TouchableOpacity
+              testID={`notif-${item.notification_id}`}
+              onPress={() => { closeAllSwipes(); if (!item.read) markRead(item.notification_id); }}
+              activeOpacity={0.92}
+              style={[styles.row, !item.read && styles.rowUnread]}
+            >
+              <View style={[styles.icon, { backgroundColor: (typeColor[item.type] || Colors.primary) + "1A" }]}>
+                <Ionicons name={typeIcon[item.type] || "notifications"} size={18} color={typeColor[item.type] || Colors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <View style={styles.rowHead}>
+                  <Text style={styles.notifTitle} numberOfLines={1}>{item.title}</Text>
+                  <Text style={styles.notifTime}>{relTime(item.created_at)}</Text>
+                </View>
+                <Text style={styles.notifBody} numberOfLines={2}>{item.body}</Text>
+              </View>
+              {!item.read && <View style={styles.dot} />}
+            </TouchableOpacity>
+          </Swipeable>
         )}
+        ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
       />
     </SafeAreaView>
   );
@@ -109,27 +243,64 @@ export default function Notifications() {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   header: {
-    flexDirection: "row", alignItems: "center",
+    flexDirection: "row", alignItems: "center", gap: 8,
     paddingHorizontal: Spacing.lg, paddingTop: Spacing.sm, paddingBottom: Spacing.md,
   },
-  title: { fontSize: 26, fontWeight: "800", color: Colors.textPrimary },
-  subtitle: { color: Colors.textSecondary, marginTop: 2 },
-  markAll: {
-    paddingHorizontal: 14, paddingVertical: 8, borderRadius: Radii.pill,
-    backgroundColor: Colors.primary + "15",
+  title: { fontSize: 26, fontWeight: "800", color: Colors.textPrimary, letterSpacing: -0.3 },
+  subtitle: { color: Colors.textSecondary, marginTop: 2, fontSize: 13 },
+  ghostBtn: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    paddingHorizontal: 12, paddingVertical: 8, borderRadius: Radii.pill,
+    backgroundColor: Colors.primary + "15", borderWidth: 1, borderColor: Colors.primary + "33",
   },
-  markAllText: { color: Colors.primary, fontWeight: "700", fontSize: 13 },
+  ghostBtnText: { color: Colors.primary, fontWeight: "800", fontSize: 12, letterSpacing: 0.2 },
+  dangerBtn: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    paddingHorizontal: 12, paddingVertical: 8, borderRadius: Radii.pill,
+    backgroundColor: Colors.danger + "12", borderWidth: 1, borderColor: Colors.danger + "33",
+  },
+  dangerBtnText: { color: Colors.danger, fontWeight: "800", fontSize: 12, letterSpacing: 0.2 },
+
   row: {
     flexDirection: "row", gap: Spacing.md, alignItems: "center",
     backgroundColor: Colors.surface, borderRadius: Radii.lg,
-    padding: Spacing.md, marginBottom: 10, ...Shadows.card,
+    padding: Spacing.md, ...Shadows.card,
   },
-  rowUnread: { borderWidth: 2, borderColor: Colors.primary + "33" },
+  rowUnread: { borderLeftWidth: 3, borderLeftColor: Colors.primary },
+  rowHead: { flexDirection: "row", alignItems: "center", gap: 8 },
   icon: { width: 40, height: 40, borderRadius: Radii.pill, alignItems: "center", justifyContent: "center" },
-  notifTitle: { fontWeight: "700", color: Colors.textPrimary, fontSize: 15 },
-  notifBody: { color: Colors.textSecondary, marginTop: 2, fontSize: 13 },
-  dot: { width: 10, height: 10, borderRadius: 5, backgroundColor: Colors.primary },
-  empty: { alignItems: "center", marginTop: Spacing.xxl, padding: Spacing.lg },
-  emptyTitle: { fontSize: 18, fontWeight: "700", color: Colors.textPrimary, marginTop: Spacing.md },
-  emptyText: { color: Colors.textSecondary, marginTop: 6, textAlign: "center" },
+  notifTitle: { flex: 1, fontWeight: "800", color: Colors.textPrimary, fontSize: 14.5 },
+  notifTime: { fontSize: 11, color: Colors.textMuted, fontWeight: "600" },
+  notifBody: { color: Colors.textSecondary, marginTop: 3, fontSize: 13, lineHeight: 18 },
+  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.primary },
+
+  // Swipe actions
+  rightAction: {
+    justifyContent: "center", alignItems: "flex-end",
+    borderRadius: Radii.lg, marginBottom: 0,
+  },
+  leftAction: {
+    justifyContent: "center", alignItems: "flex-start",
+    borderRadius: Radii.lg, marginBottom: 0,
+  },
+  deleteBtn: {
+    width: 88, height: "100%", backgroundColor: Colors.danger,
+    alignItems: "center", justifyContent: "center",
+    borderTopRightRadius: Radii.lg, borderBottomRightRadius: Radii.lg,
+  },
+  readBtn: {
+    width: 88, height: "100%", backgroundColor: Colors.success,
+    alignItems: "center", justifyContent: "center",
+    borderTopLeftRadius: Radii.lg, borderBottomLeftRadius: Radii.lg,
+  },
+  actionTxt: { color: "#fff", fontWeight: "800", fontSize: 11, marginTop: 3, letterSpacing: 0.3 },
+
+  empty: { alignItems: "center", padding: Spacing.lg },
+  emptyIcon: {
+    width: 84, height: 84, borderRadius: 42,
+    backgroundColor: Colors.primary + "12",
+    alignItems: "center", justifyContent: "center", marginBottom: Spacing.md,
+  },
+  emptyTitle: { fontSize: 18, fontWeight: "800", color: Colors.textPrimary, marginTop: 4 },
+  emptyText: { color: Colors.textSecondary, marginTop: 6, textAlign: "center", fontSize: 13, lineHeight: 19, maxWidth: 300 },
 });
