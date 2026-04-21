@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Modal } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "../../src/api";
@@ -47,6 +47,7 @@ function maskPan(pan?: string) {
 export default function ApplicationSummary() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [app, setApp] = useState<App | null>(null);
   const [client, setClient] = useState<Client | null>(null);
   const [loading, setLoading] = useState(true);
@@ -150,7 +151,7 @@ export default function ApplicationSummary() {
   const showLoanTrack = app.status === "funded" && !!app.loan_id;
 
   return (
-    <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+    <SafeAreaView style={styles.safe} edges={["top"]}>
       <View style={styles.topBar}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} testID="back-btn">
           <Ionicons name="chevron-back" size={24} color={Colors.textPrimary} />
@@ -159,7 +160,13 @@ export default function ApplicationSummary() {
         <View style={{ width: 44 }} />
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: Spacing.lg, paddingBottom: 160 }}>
+      <ScrollView
+        contentContainerStyle={{
+          padding: Spacing.lg,
+          // extra bottom padding = safe-area inset + action bar height + breathing room
+          paddingBottom: Math.max(insets.bottom, 12) + (showActions ? 96 : showFund || showLoanTrack ? 110 : 24),
+        }}
+      >
         <Text style={styles.h1}>Application summary</Text>
         <Text style={styles.h1Sub}>
           {showLoanTrack
@@ -290,9 +297,9 @@ export default function ApplicationSummary() {
         </Card>
       </ScrollView>
 
-      {/* Action bar */}
+      {/* Action bar (sticky footer) */}
       {(showActions || showFund || showLoanTrack) && (
-        <View style={styles.actionBar}>
+        <View style={[styles.actionBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
           {showActions && (
             <View style={{ flexDirection: "row", gap: Spacing.sm }}>
               <View style={{ flex: 1 }}>
@@ -333,14 +340,9 @@ export default function ApplicationSummary() {
               activeOpacity={0.88}
               style={styles.trackBtn}
             >
-              <View style={styles.trackIconWrap}>
-                <Ionicons name="trending-up" size={18} color="#fff" />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.trackBtnTitle}>Loan Track</Text>
-                <Text style={styles.trackBtnSub}>Repayment schedule · Mark paid · Reschedule · Rollback</Text>
-              </View>
-              <Ionicons name="arrow-forward" size={18} color="#fff" />
+              <Ionicons name="trending-up" size={16} color="#fff" />
+              <Text style={styles.trackBtnTitle}>Loan Track</Text>
+              <Ionicons name="arrow-forward" size={16} color="#fff" style={{ marginLeft: "auto" }} />
             </TouchableOpacity>
           )}
         </View>
@@ -452,23 +454,17 @@ const styles = StyleSheet.create({
 
   actionBar: {
     position: "absolute", bottom: 0, left: 0, right: 0,
-    backgroundColor: Colors.surface, padding: Spacing.md, paddingBottom: Spacing.lg,
+    backgroundColor: Colors.surface, paddingHorizontal: Spacing.md, paddingTop: 10,
     borderTopWidth: 1, borderTopColor: Colors.borderLight,
   },
 
-  // Loan Track CTA
+  // Compact Loan Track CTA — respects system nav safe area via actionBar padding
   trackBtn: {
-    flexDirection: "row", alignItems: "center", gap: 12,
-    backgroundColor: Colors.primary, borderRadius: Radii.xl,
-    paddingVertical: 14, paddingHorizontal: 16, ...Shadows.card,
+    flexDirection: "row", alignItems: "center", gap: 10,
+    backgroundColor: Colors.primary, borderRadius: Radii.lg,
+    paddingVertical: 12, paddingHorizontal: 16, minHeight: 48, ...Shadows.button,
   },
-  trackIconWrap: {
-    width: 38, height: 38, borderRadius: 19,
-    backgroundColor: "rgba(255,255,255,0.18)",
-    alignItems: "center", justifyContent: "center",
-  },
-  trackBtnTitle: { color: "#fff", fontWeight: "800", fontSize: 15, letterSpacing: 0.2 },
-  trackBtnSub: { color: "#E0E7FF", fontSize: 11, fontWeight: "600", marginTop: 2 },
+  trackBtnTitle: { color: "#fff", fontWeight: "800", fontSize: 14.5, letterSpacing: 0.3 },
 
   modalBackdrop: { flex: 1, backgroundColor: "rgba(15,23,42,0.55)", justifyContent: "flex-end" },
   modalSheet: { backgroundColor: Colors.surface, padding: Spacing.lg, borderTopLeftRadius: Radii.xl, borderTopRightRadius: Radii.xl },

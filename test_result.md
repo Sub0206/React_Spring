@@ -318,7 +318,51 @@ frontend:
             OTP:   returned as `demo_otp` in /api/auth/send-otp response.
           Do not modify backend code. Update status_history with agent="testing" on pass/fail.
 
-  - task: "Application Summary screen (iteration 18)"
+  - task: "UX polish — notifications header + compact Loan Track CTA (iteration 20)"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/notifications.tsx, /app/frontend/app/application/[id].tsx, /app/frontend/src/theme.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Iteration 20 polish pass per UI/UX lead direction:
+
+          A) Notifications screen (`/app/frontend/app/notifications.tsx`)
+             • Added a persistent top nav bar: [back-btn (chevron, circle 40×40)] [ Notifications title ] [ action pill ]
+             • Back button (testID="notif-back") is ALWAYS rendered — even in the empty state
+               after Clear All — and falls back to /(tabs)/dashboard when there's no history.
+             • Subtitle row ("33 unread" / "All caught up" / "No alerts right now") moved into its
+               own lighter sub-header directly below the nav bar for clean hierarchy.
+             • Action pill on the right morphs by state:
+                 unread > 0       → blue "Mark all read"
+                 all read, >0 items → red outlined "Clear all" (with trash icon)
+                 empty            → 44px spacer (balanced header)
+
+          B) Application Summary action bar (`/app/frontend/app/application/[id].tsx`)
+             • Switched SafeAreaView edges to ["top"] so the sticky footer handles its own
+               bottom spacing via `useSafeAreaInsets()`.
+             • Action bar now computes `paddingBottom = max(insets.bottom, 12)` — respects
+               Android 3-button nav / gesture area and iPhone home indicator.
+             • ScrollView `paddingBottom` dynamically accounts for button-set height so no
+               content is ever hidden behind the sticky footer.
+             • Loan Track CTA redesigned: compact single-row ROW layout
+                 [ trending-up icon (16px) ] [ "Loan Track" title ] [ arrow-forward (16px) ]
+               paddingVertical:12, minHeight:48, subtitle removed (less visual weight).
+               Measured on 390×844 web preview → 48px tall × 358px wide, bottom 12px gap
+               to viewport — no overlap with system bottom nav.
+
+          C) Theme (`/app/frontend/src/theme.ts`)
+             • Added `accent: #0D9488` (deep teal) + `accentSoft: #CCFBF1` for premium
+               callouts. Existing royal-blue / emerald / gold / crimson palette retained.
+
+          Verified via playwright 390×844 screenshots:
+            • Notifications: back button visible in loaded / mark-all-read / empty states.
+            • Empty state still shows "No notifications available" + illustration + back btn.
+            • Funded Application Summary: compact Loan Track button, no overlap with bottom.
     implemented: true
     working: true
     file: "/app/frontend/app/application/[id].tsx"

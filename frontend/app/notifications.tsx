@@ -4,7 +4,7 @@ import {
   Animated, Alert, Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { Swipeable } from "react-native-gesture-handler";
 import { api } from "../src/api";
@@ -44,6 +44,7 @@ function relTime(iso: string) {
 }
 
 export default function Notifications() {
+  const router = useRouter();
   const [items, setItems] = useState<Notif[]>([]);
   const [loading, setLoading] = useState(false);
   const swipeableRefs = useRef<Record<string, Swipeable | null>>({});
@@ -158,25 +159,34 @@ export default function Notifications() {
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
-      <View style={styles.header}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.title}>Notifications</Text>
-          <Text style={styles.subtitle}>
-            {hasAny ? (unread > 0 ? `${unread} unread` : "All caught up") : "No alerts right now"}
-          </Text>
-        </View>
-        {unread > 0 && (
+      {/* Top nav bar — ALWAYS visible (back button persists in empty state) */}
+      <View style={styles.topBar}>
+        <TouchableOpacity
+          testID="notif-back"
+          onPress={() => (router.canGoBack() ? router.back() : router.replace("/(tabs)/dashboard" as any))}
+          style={styles.backBtn}
+        >
+          <Ionicons name="chevron-back" size={22} color={Colors.textPrimary} />
+        </TouchableOpacity>
+        <Text style={styles.topTitle}>Notifications</Text>
+        {unread > 0 ? (
           <TouchableOpacity testID="mark-all-read" onPress={markAllRead} style={styles.ghostBtn}>
-            <Ionicons name="checkmark-done" size={14} color={Colors.primary} />
             <Text style={styles.ghostBtnText}>Mark all read</Text>
           </TouchableOpacity>
-        )}
-        {showClearAll && (
+        ) : showClearAll ? (
           <TouchableOpacity testID="clear-all" onPress={clearAll} style={styles.dangerBtn}>
-            <Ionicons name="trash" size={14} color={Colors.danger} />
+            <Ionicons name="trash-outline" size={14} color={Colors.danger} />
             <Text style={styles.dangerBtnText}>Clear all</Text>
           </TouchableOpacity>
+        ) : (
+          <View style={{ width: 44 }} />
         )}
+      </View>
+
+      <View style={styles.subHeader}>
+        <Text style={styles.subtitle}>
+          {hasAny ? (unread > 0 ? `${unread} unread` : "All caught up") : "No alerts right now"}
+        </Text>
       </View>
 
       <FlatList
@@ -185,8 +195,8 @@ export default function Notifications() {
         keyExtractor={(i) => i.notification_id}
         refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={Colors.primary} />}
         contentContainerStyle={[
-          { padding: Spacing.lg, paddingBottom: Spacing.xxl },
-          items.length === 0 && { flex: 1, justifyContent: "center" },
+          { paddingHorizontal: Spacing.lg, paddingTop: Spacing.sm, paddingBottom: Spacing.xxl },
+          items.length === 0 && { flexGrow: 1, justifyContent: "center" },
         ]}
         ListEmptyComponent={
           <View style={styles.empty}>
@@ -242,24 +252,31 @@ export default function Notifications() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
-  header: {
-    flexDirection: "row", alignItems: "center", gap: 8,
-    paddingHorizontal: Spacing.lg, paddingTop: Spacing.sm, paddingBottom: Spacing.md,
+  topBar: {
+    flexDirection: "row", alignItems: "center", gap: 10,
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
+    backgroundColor: Colors.bg,
   },
-  title: { fontSize: 26, fontWeight: "800", color: Colors.textPrimary, letterSpacing: -0.3 },
-  subtitle: { color: Colors.textSecondary, marginTop: 2, fontSize: 13 },
+  backBtn: {
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: Colors.surface, alignItems: "center", justifyContent: "center",
+    ...Shadows.card,
+  },
+  topTitle: { flex: 1, fontSize: 18, fontWeight: "800", color: Colors.textPrimary, letterSpacing: -0.2 },
+  subHeader: { paddingHorizontal: Spacing.lg, paddingBottom: 6 },
+  subtitle: { color: Colors.textSecondary, fontSize: 12.5, fontWeight: "600" },
+
   ghostBtn: {
-    flexDirection: "row", alignItems: "center", gap: 6,
-    paddingHorizontal: 12, paddingVertical: 8, borderRadius: Radii.pill,
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: Radii.pill,
     backgroundColor: Colors.primary + "15", borderWidth: 1, borderColor: Colors.primary + "33",
   },
-  ghostBtnText: { color: Colors.primary, fontWeight: "800", fontSize: 12, letterSpacing: 0.2 },
+  ghostBtnText: { color: Colors.primary, fontWeight: "800", fontSize: 11.5, letterSpacing: 0.2 },
   dangerBtn: {
-    flexDirection: "row", alignItems: "center", gap: 6,
-    paddingHorizontal: 12, paddingVertical: 8, borderRadius: Radii.pill,
+    flexDirection: "row", alignItems: "center", gap: 4,
+    paddingHorizontal: 10, paddingVertical: 7, borderRadius: Radii.pill,
     backgroundColor: Colors.danger + "12", borderWidth: 1, borderColor: Colors.danger + "33",
   },
-  dangerBtnText: { color: Colors.danger, fontWeight: "800", fontSize: 12, letterSpacing: 0.2 },
+  dangerBtnText: { color: Colors.danger, fontWeight: "800", fontSize: 11.5, letterSpacing: 0.2 },
 
   row: {
     flexDirection: "row", gap: Spacing.md, alignItems: "center",

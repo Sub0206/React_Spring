@@ -34,6 +34,10 @@ export const Colors = {
   info: "#0EA5E9",
   infoSoft: "#E0F2FE",
 
+  // Accent — deep teal for premium highlights (use sparingly)
+  accent: "#0D9488",
+  accentSoft: "#CCFBF1",
+
   // Backgrounds — soft layered surface
   bg: "#F8FAFC",
   bgAlt: "#F1F5F9",
