@@ -17,7 +17,17 @@ import { api } from "./api";
 
 // ----- API wrappers -----
 
-export async function checkHasPasscode(mobile: string): Promise<boolean> {
+/**
+ * Probe whether a mobile has a server-side passcode. Returns:
+ *   - true   → passcode exists (go to passcode-login screen)
+ *   - false  → no passcode set (go to OTP / set-passcode flow)
+ *   - null   → unknown (network error / CORS / timeout). Caller MUST treat
+ *              this as "don't decide yet" — never as "no passcode".
+ *
+ * Returning a tri-state prevents a flaky network during cold start from
+ * accidentally bouncing the user to the "Create passcode" screen.
+ */
+export async function checkHasPasscode(mobile: string): Promise<boolean | null> {
   try {
     const r = await api<{ has_passcode: boolean }>(
       `/auth/has-passcode?mobile=${encodeURIComponent(mobile)}`,
@@ -25,7 +35,7 @@ export async function checkHasPasscode(mobile: string): Promise<boolean> {
     );
     return !!r.has_passcode;
   } catch {
-    return false;
+    return null;
   }
 }
 

@@ -1,296 +1,309 @@
-"""Smoke tests for new server-side passcode auth endpoints (iteration 23).
+"""
+Iteration 24 — re-verify server-side passcode auth endpoints under realistic
+production scenarios.
 
-Tests both /api/* and /api/v1/* paths since the v1 middleware mirrors them.
+Targets the live preview backend via REACT_APP/EXPO_PUBLIC_BACKEND_URL.
+Endpoints exercised: /api/v1/auth/* (the /api/v1/<x> middleware aliases the
+canonical /api/<x> handlers, so this validates BOTH paths in spirit).
+
+Reference creds (from /app/memory/test_credentials.md):
+    Mobile  : 9876543210
+    Passcode: 5678
 """
 import os
-import sys
-import json
+import re
 import time
+import uuid
+import json
+import base64
 import requests
+from datetime import datetime
+from pathlib import Path
 import jwt as pyjwt
-from datetime import datetime, timezone
 
-BASE = os.environ.get(
-    "BACKEND_URL",
-    "https://lending-hub-63.preview.emergentagent.com",
-).rstrip("/")
+# Resolve backend URL from frontend .env
+FRONT_ENV = Path("/app/frontend/.env")
+BACKEND_URL = None
+for line in FRONT_ENV.read_text().splitlines():
+    if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
+        BACKEND_URL = line.split("=", 1)[1].strip().strip('"')
+        break
+assert BACKEND_URL, "EXPO_PUBLIC_BACKEND_URL not found"
+API_V1 = f"{BACKEND_URL}/api/v1"
+API_LEGACY = f"{BACKEND_URL}/api"
+print(f"BACKEND={BACKEND_URL}\n")
 
-V1 = f"{BASE}/api/v1"
-LEGACY = f"{BASE}/api"
+results = []  # (name, passed, evidence)
 
-MOBILE = "9876543210"
-NEW_MOBILE = "9000000001"
+def record(name, passed, evidence=""):
+    icon = "✅" if passed else "❌"
+    results.append((name, passed, evidence))
+    print(f"{icon} {name}  {evidence}")
 
-results = []
-
-
-def record(name, ok, detail=""):
-    icon = "PASS" if ok else "FAIL"
-    line = f"[{icon}] {name}"
-    if detail:
-        line += f" — {detail}"
-    print(line)
-    results.append((ok, name, detail))
-
-
-def jpost(url, body, token=None, expect=None):
+def post(path, json_body=None, token=None, base=API_V1):
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    r = requests.post(url, json=body, headers=headers, timeout=30)
-    return r
+    return requests.post(f"{base}{path}", json=json_body or {}, headers=headers, timeout=30)
 
-
-def jget(url, token=None):
+def get(path, params=None, token=None, base=API_V1):
     headers = {}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    r = requests.get(url, headers=headers, timeout=30)
-    return r
+    return requests.get(f"{base}{path}", params=params or {}, headers=headers, timeout=30)
 
 
-# ============================================================
-# 1. Initial /has-passcode probe (no passcode set yet)
-# ============================================================
-def test_1_has_passcode_initial():
-    # Reset: clear passcode_hash for the user if exists (simulate fresh state)
-    # We can't directly hit DB so we'll just validate the response shape.
-    r = jget(f"{V1}/auth/has-passcode?mobile={MOBILE}")
-    if r.status_code != 200:
-        record("1. GET /api/v1/auth/has-passcode initial", False, f"status={r.status_code} body={r.text[:200]}")
-        return False
-    data = r.json()
-    ok = data.get("mobile") == MOBILE and "has_passcode" in data and isinstance(data["has_passcode"], bool)
-    record("1. GET /api/v1/auth/has-passcode initial shape", ok,
-           f"data={data}")
+# ---------------------------------------------------------------------------
+# 1. Happy-path scenarios for existing user 9876543210 (passcode = 5678)
+# ---------------------------------------------------------------------------
+print("=== 1. HAPPY-PATH for 9876543210 (passcode 5678) ===")
+EXISTING_MOBILE = "9876543210"
+EXISTING_PASSCODE = "5678"
 
-    # also test unknown mobile -> 200, has_passcode False (no enumeration)
-    r2 = jget(f"{V1}/auth/has-passcode?mobile=9999999999")
-    ok2 = r2.status_code == 200 and r2.json().get("has_passcode") is False
-    record("1b. has-passcode for unknown mobile returns 200 has_passcode=false", ok2,
-           f"status={r2.status_code} body={r2.text[:200]}")
-    return True
+r = get("/auth/has-passcode", params={"mobile": EXISTING_MOBILE})
+ok = r.status_code == 200 and r.json().get("has_passcode") is True
+record("1.1 has-passcode for existing user → true", ok,
+       f"status={r.status_code}, body={r.json() if r.status_code==200 else r.text}")
 
+r = post("/auth/passcode-login", {"mobile": EXISTING_MOBILE, "passcode": EXISTING_PASSCODE})
+existing_token = None
+ok = r.status_code == 200 and "access_token" in r.json()
+if ok:
+    existing_token = r.json()["access_token"]
+record("1.2 passcode-login mobile/5678 → 200 + JWT", ok,
+       f"status={r.status_code}")
 
-# ============================================================
-# 2. End-to-end happy path
-# ============================================================
-def test_2_happy_path():
-    # 2a. send-otp login
-    r = jpost(f"{V1}/auth/send-otp", {"mobile": MOBILE, "purpose": "login"})
-    if r.status_code != 200:
-        record("2a. send-otp login", False, f"status={r.status_code} body={r.text[:200]}")
-        return None
-    demo_otp = r.json().get("demo_otp")
-    record("2a. send-otp login returned demo_otp", bool(demo_otp), f"otp={demo_otp}")
-
-    # 2b. verify-otp
-    r = jpost(f"{V1}/auth/verify-otp", {"mobile": MOBILE, "otp": demo_otp})
-    if r.status_code != 200:
-        record("2b. verify-otp", False, f"status={r.status_code} body={r.text[:200]}")
-        return None
-    body = r.json()
-    has_pc_field = "has_passcode" in body and isinstance(body["has_passcode"], bool)
-    token = body.get("access_token")
-    record("2b. verify-otp 200 includes has_passcode bool + access_token",
-           has_pc_field and bool(token),
-           f"has_passcode={body.get('has_passcode')} token_len={len(token) if token else 0}")
-
-    # Initially has_passcode should be False (assuming fresh state). Note: db may already have one
-    # from prior test runs. We reset via reset-passcode below if needed.
-
-    # 2c. set-passcode
-    r = jpost(f"{V1}/auth/set-passcode", {"passcode": "1234"}, token=token)
-    if r.status_code != 200:
-        record("2c. set-passcode 1234", False, f"status={r.status_code} body={r.text[:200]}")
-        return None
-    sd = r.json()
-    record("2c. set-passcode 1234 → ok=true,has_passcode=true",
-           sd.get("ok") is True and sd.get("has_passcode") is True,
-           f"resp={sd}")
-
-    # 2d. has-passcode now returns true
-    r = jget(f"{V1}/auth/has-passcode?mobile={MOBILE}")
-    record("2d. has-passcode now true",
-           r.status_code == 200 and r.json().get("has_passcode") is True,
-           f"resp={r.text[:200]}")
-
-    # 2e. passcode-login with correct code
-    r = jpost(f"{V1}/auth/passcode-login", {"mobile": MOBILE, "passcode": "1234"})
-    pl = r.json() if r.status_code == 200 else {}
-    new_token = pl.get("access_token")
-    user = pl.get("user")
-    record("2e. passcode-login 1234 → 200 + access_token + user",
-           r.status_code == 200 and bool(new_token) and bool(user),
-           f"status={r.status_code} body_keys={list(pl.keys()) if pl else r.text[:120]}")
-
-    # 2f. passcode-login with wrong code
-    r = jpost(f"{V1}/auth/passcode-login", {"mobile": MOBILE, "passcode": "0000"})
-    detail = ""
+# Decode JWT and check 30-day TTL
+ttl_ok = False
+ttl_evidence = ""
+if existing_token:
     try:
-        detail = r.json().get("detail", "")
-    except Exception:
-        detail = r.text[:200]
-    record("2f. passcode-login 0000 → 401 'Invalid mobile or passcode.'",
-           r.status_code == 401 and "Invalid mobile or passcode" in detail,
-           f"status={r.status_code} detail={detail!r}")
-
-    return new_token or token
-
-
-# ============================================================
-# 3. Validation cases
-# ============================================================
-def test_3_validation(token):
-    # 3a. set-passcode with non-4-digit body "12"
-    r = jpost(f"{V1}/auth/set-passcode", {"passcode": "12"}, token=token)
-    record("3a. set-passcode '12' → 400",
-           r.status_code == 400,
-           f"status={r.status_code} body={r.text[:200]}")
-
-    # 3b. set-passcode without Authorization header
-    r = requests.post(f"{V1}/auth/set-passcode", json={"passcode": "1234"}, timeout=15)
-    record("3b. set-passcode without Authorization → 401",
-           r.status_code == 401,
-           f"status={r.status_code} body={r.text[:200]}")
-
-    # 3c. passcode-login with passcode="abc"
-    r = jpost(f"{V1}/auth/passcode-login", {"mobile": MOBILE, "passcode": "abc"})
-    record("3c. passcode-login passcode='abc' → 400",
-           r.status_code == 400,
-           f"status={r.status_code} body={r.text[:200]}")
-
-
-# ============================================================
-# 4. Forgot/reset flow
-# ============================================================
-def test_4_reset_flow():
-    # 4a. send-otp purpose=reset
-    r = jpost(f"{V1}/auth/send-otp", {"mobile": MOBILE, "purpose": "reset"})
-    if r.status_code != 200:
-        record("4a. send-otp reset", False, f"status={r.status_code} body={r.text[:200]}")
-        return
-    demo_otp = r.json().get("demo_otp")
-    record("4a. send-otp reset returned demo_otp", bool(demo_otp), f"otp={demo_otp}")
-
-    # 4b. reset-passcode with new code 5678
-    r = jpost(f"{V1}/auth/reset-passcode",
-              {"mobile": MOBILE, "otp": demo_otp, "passcode": "5678"})
-    if r.status_code != 200:
-        record("4b. reset-passcode → 200", False, f"status={r.status_code} body={r.text[:200]}")
-        return
-    body = r.json()
-    record("4b. reset-passcode 200 returns access_token + user + has_passcode=true",
-           bool(body.get("access_token")) and bool(body.get("user")) and body.get("has_passcode") is True,
-           f"keys={list(body.keys())} has_passcode={body.get('has_passcode')}")
-
-    # 4c. old passcode 1234 must NOT work
-    r = jpost(f"{V1}/auth/passcode-login", {"mobile": MOBILE, "passcode": "1234"})
-    record("4c. old passcode 1234 → 401",
-           r.status_code == 401,
-           f"status={r.status_code} body={r.text[:200]}")
-
-    # 4d. new passcode 5678 works
-    r = jpost(f"{V1}/auth/passcode-login", {"mobile": MOBILE, "passcode": "5678"})
-    record("4d. new passcode 5678 → 200",
-           r.status_code == 200 and bool(r.json().get("access_token")),
-           f"status={r.status_code} body_keys={list(r.json().keys()) if r.status_code==200 else r.text[:200]}")
-
-
-# ============================================================
-# 5. JWT lifetime (~30 days)
-# ============================================================
-def test_5_jwt_lifetime():
-    # passcode-login with new code 5678
-    r = jpost(f"{V1}/auth/passcode-login", {"mobile": MOBILE, "passcode": "5678"})
-    if r.status_code != 200:
-        record("5. JWT lifetime check via passcode-login", False,
-               f"login failed status={r.status_code}")
-        return
-    token = r.json().get("access_token")
-    try:
-        decoded = pyjwt.decode(token, options={"verify_signature": False})
+        payload = pyjwt.decode(existing_token, options={"verify_signature": False})
+        delta = int(payload["exp"]) - int(payload["iat"])
+        ttl_ok = delta >= 29 * 86400
+        ttl_evidence = f"exp-iat={delta}s ({delta/86400:.4f}d)"
     except Exception as e:
-        record("5. decode JWT exp", False, f"decode error: {e}")
-        return
-    exp = decoded.get("exp")
-    iat = decoded.get("iat")
-    now_ts = int(datetime.now(timezone.utc).timestamp())
-    delta_days = (exp - now_ts) / 86400.0
-    # tolerance: between 29.5 and 30.5 days
-    ok = 29.5 <= delta_days <= 30.5
-    record("5. JWT exp roughly 30 days from now",
-           ok,
-           f"exp={exp} iat={iat} now={now_ts} delta_days={delta_days:.4f}")
+        ttl_evidence = f"decode error: {e}"
+record("1.3 JWT ttl (exp-iat) >= 29 days", ttl_ok, ttl_evidence)
+
+r = post("/auth/verify-passcode", {"passcode": EXISTING_PASSCODE}, token=existing_token)
+ok = r.status_code == 200 and r.json().get("ok") is True
+record("1.4 verify-passcode (correct) → 200 {ok:true}", ok,
+       f"status={r.status_code}, body={r.text[:160]}")
+
+# verify-passcode does NOT issue a new token (no access_token field expected)
+no_new_token = False
+if r.status_code == 200:
+    no_new_token = "access_token" not in r.json()
+record("1.5 verify-passcode does NOT issue new token", no_new_token,
+       f"keys={list(r.json().keys()) if r.status_code==200 else r.status_code}")
+
+r = post("/auth/verify-passcode", {"passcode": "0000"}, token=existing_token)
+ok = r.status_code == 401 and "passcode" in (r.json().get("detail", "").lower())
+record("1.6 verify-passcode (wrong 0000) → 401", ok,
+       f"status={r.status_code}, detail={r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else r.text[:120]}")
 
 
-# ============================================================
-# 6. Regression: signup flow for brand-new mobile
-# ============================================================
-def test_6_signup_regression():
-    # Try signup for 9000000001
-    r = jpost(f"{V1}/auth/send-otp",
-              {"mobile": NEW_MOBILE, "purpose": "signup", "name": "Test User"})
-    if r.status_code == 400 and "already" in r.text.lower():
-        # Already registered from earlier run; switch to login flow to confirm token works
-        record("6a. signup send-otp (mobile already exists, falling back to login)",
-               True, f"status=400 already-registered; trying login")
-        r = jpost(f"{V1}/auth/send-otp", {"mobile": NEW_MOBILE, "purpose": "login"})
-        if r.status_code != 200:
-            record("6. signup-regression login fallback failed", False,
-                   f"status={r.status_code} body={r.text[:200]}")
-            return
-        otp = r.json().get("demo_otp")
-        r = jpost(f"{V1}/auth/verify-otp", {"mobile": NEW_MOBILE, "otp": otp})
-        record("6b. verify-otp login (existing) → 200 with access_token + has_passcode bool",
-               r.status_code == 200 and "access_token" in r.json() and isinstance(r.json().get("has_passcode"), bool),
-               f"status={r.status_code} keys={list(r.json().keys()) if r.status_code==200 else r.text[:200]}")
-        return
-    if r.status_code != 200:
-        record("6a. signup send-otp", False, f"status={r.status_code} body={r.text[:200]}")
-        return
-    otp = r.json().get("demo_otp")
-    record("6a. signup send-otp → demo_otp", bool(otp), f"otp={otp}")
-    r = jpost(f"{V1}/auth/verify-otp", {"mobile": NEW_MOBILE, "otp": otp})
-    if r.status_code != 200:
-        record("6b. signup verify-otp", False, f"status={r.status_code} body={r.text[:200]}")
-        return
-    body = r.json()
-    record("6b. signup verify-otp → 200 with access_token + user + has_passcode bool",
-           bool(body.get("access_token")) and bool(body.get("user")) and isinstance(body.get("has_passcode"), bool),
-           f"user_id={body.get('user',{}).get('user_id')} mobile={body.get('user',{}).get('mobile')} has_passcode={body.get('has_passcode')}")
+# ---------------------------------------------------------------------------
+# 2. Sign-up → set-passcode → passcode-login flow (fresh mobile)
+# ---------------------------------------------------------------------------
+print("\n=== 2. SIGN-UP → SET-PASSCODE → PASSCODE-LOGIN ===")
+NEW_MOBILE = "9000000077"
+# Best-effort cleanup if user already exists from previous runs:
+# we cannot DELETE users via API, so if the mobile already has a passcode
+# we simply switch to a less-used number.
+probe = get("/auth/has-passcode", params={"mobile": NEW_MOBILE}).json()
+if probe.get("has_passcode"):
+    NEW_MOBILE = "9000007" + str(int(time.time()) % 1000).zfill(3)
+    print(f"   (mobile collided — switching to fresh {NEW_MOBILE})")
+
+r = post("/auth/send-otp", {"mobile": NEW_MOBILE, "name": "QA User", "purpose": "signup"})
+signup_otp = None
+if r.status_code == 200:
+    signup_otp = r.json().get("demo_otp")
+ok = r.status_code == 200 and signup_otp is not None
+record("2.1 send-otp(signup) → 200 + demo_otp", ok,
+       f"status={r.status_code}, demo_otp={signup_otp}")
+
+r = post("/auth/verify-otp", {"mobile": NEW_MOBILE, "otp": signup_otp or ""})
+new_token = None
+if r.status_code == 200:
+    new_token = r.json().get("access_token")
+ok = (r.status_code == 200
+      and r.json().get("has_passcode") is False
+      and new_token)
+record("2.2 verify-otp → 200, has_passcode:false, JWT", ok,
+       f"status={r.status_code}, has_pc={r.json().get('has_passcode') if r.status_code==200 else '-'}")
+
+r = post("/auth/set-passcode", {"passcode": "1111"}, token=new_token)
+ok = r.status_code == 200 and r.json().get("has_passcode") is True
+record("2.3 set-passcode 1111 (Auth) → 200 has_passcode:true", ok,
+       f"status={r.status_code}, body={r.text[:160]}")
+
+r = get("/auth/has-passcode", params={"mobile": NEW_MOBILE})
+ok = r.status_code == 200 and r.json().get("has_passcode") is True
+record("2.4 has-passcode for new user → true", ok,
+       f"status={r.status_code}, body={r.json() if r.status_code==200 else r.text}")
+
+r = post("/auth/passcode-login", {"mobile": NEW_MOBILE, "passcode": "1111"})
+ok = r.status_code == 200 and r.json().get("access_token")
+record("2.5 passcode-login 1111 → 200 + JWT", ok,
+       f"status={r.status_code}")
 
 
-# ============================================================
-# Bonus: confirm /api/* legacy paths also work for these endpoints
-# ============================================================
-def test_legacy_alias_smoke():
-    r = jget(f"{LEGACY}/auth/has-passcode?mobile={MOBILE}")
-    record("L1. /api/auth/has-passcode (legacy) works",
-           r.status_code == 200 and "has_passcode" in r.json(),
-           f"status={r.status_code} body={r.text[:200]}")
+# ---------------------------------------------------------------------------
+# 3. Forgot/reset flow
+# ---------------------------------------------------------------------------
+print("\n=== 3. FORGOT / RESET FLOW ===")
+r = post("/auth/send-otp", {"mobile": NEW_MOBILE, "purpose": "reset"})
+reset_otp = r.json().get("demo_otp") if r.status_code == 200 else None
+record("3.1 send-otp(reset) for known mobile → 200", r.status_code == 200 and reset_otp,
+       f"status={r.status_code}, demo_otp={reset_otp}")
+
+r = post("/auth/reset-passcode",
+         {"mobile": NEW_MOBILE, "otp": reset_otp or "", "passcode": "2222"})
+reset_token = r.json().get("access_token") if r.status_code == 200 else None
+ok = (r.status_code == 200 and reset_token
+      and r.json().get("has_passcode") is True)
+record("3.2 reset-passcode → 200 + JWT + has_passcode:true", ok,
+       f"status={r.status_code}")
+
+r = post("/auth/passcode-login", {"mobile": NEW_MOBILE, "passcode": "1111"})
+ok = r.status_code == 401
+record("3.3 old passcode 1111 now → 401", ok,
+       f"status={r.status_code}, detail={r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else r.text[:120]}")
+
+r = post("/auth/passcode-login", {"mobile": NEW_MOBILE, "passcode": "2222"})
+ok = r.status_code == 200 and r.json().get("access_token")
+record("3.4 new passcode 2222 → 200 + JWT", ok, f"status={r.status_code}")
+
+# Reuse reset OTP a 2nd time
+r = post("/auth/reset-passcode",
+         {"mobile": NEW_MOBILE, "otp": reset_otp or "", "passcode": "3333"})
+ok = r.status_code == 400
+record("3.5 reuse same reset OTP → 400", ok,
+       f"status={r.status_code}, detail={r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else r.text[:120]}")
+
+# Reset OTP for unknown mobile
+r = post("/auth/send-otp", {"mobile": "9000000888", "purpose": "reset"})
+ok = r.status_code == 404
+record("3.6 send-otp(reset) for unknown mobile → 404", ok,
+       f"status={r.status_code}, detail={r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else r.text[:120]}")
 
 
-def main():
-    print(f"BASE={BASE}")
-    print(f"V1={V1}")
-    print()
-    test_1_has_passcode_initial()
-    token = test_2_happy_path()
-    if token:
-        test_3_validation(token)
-    test_4_reset_flow()
-    test_5_jwt_lifetime()
-    test_6_signup_regression()
-    test_legacy_alias_smoke()
+# ---------------------------------------------------------------------------
+# 4. Edge cases & validation
+# ---------------------------------------------------------------------------
+print("\n=== 4. VALIDATION / EDGE CASES ===")
+r = get("/auth/has-passcode", params={"mobile": ""})
+ok = r.status_code == 200 and r.json().get("has_passcode") is False
+record("4.1 has-passcode empty mobile → 200 false", ok,
+       f"status={r.status_code}, body={r.text[:120]}")
 
-    print()
-    fails = [(n, d) for ok, n, d in results if not ok]
-    print(f"\n=== TOTAL: {len(results)}  PASS: {sum(1 for ok,_,_ in results if ok)}  FAIL: {len(fails)} ===")
-    for n, d in fails:
-        print(f"  FAIL → {n} :: {d}")
-    return 0 if not fails else 1
+r = get("/auth/has-passcode", params={"mobile": "abc"})
+ok = r.status_code == 200 and r.json().get("has_passcode") is False
+record("4.2 has-passcode non-numeric → 200 false", ok,
+       f"status={r.status_code}, body={r.text[:120]}")
+
+r = get("/auth/has-passcode", params={"mobile": "9999999999"})
+ok = r.status_code == 200 and r.json().get("has_passcode") is False
+record("4.3 has-passcode unknown mobile → 200 false (no enum leak)", ok,
+       f"status={r.status_code}, body={r.text[:120]}")
+
+r = post("/auth/passcode-login", {"mobile": EXISTING_MOBILE, "passcode": ""})
+ok = r.status_code == 400
+record("4.4 passcode-login empty passcode → 400", ok,
+       f"status={r.status_code}, detail={r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else r.text[:120]}")
+
+r = post("/auth/passcode-login", {"mobile": EXISTING_MOBILE, "passcode": "12"})
+ok = r.status_code == 400
+record("4.5 passcode-login 2 digits → 400", ok,
+       f"status={r.status_code}, detail={r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else r.text[:120]}")
+
+r = post("/auth/passcode-login", {"mobile": EXISTING_MOBILE, "passcode": "abcd"})
+ok = r.status_code == 400
+record("4.6 passcode-login non-numeric → 400", ok,
+       f"status={r.status_code}, detail={r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else r.text[:120]}")
+
+# Account with NO passcode → create one via signup, do NOT set passcode, then attempt passcode-login
+NOPC_MOBILE = "9000007" + str((int(time.time()) + 5) % 1000).zfill(3)
+r = post("/auth/send-otp", {"mobile": NOPC_MOBILE, "name": "NoPC User", "purpose": "signup"})
+nopc_otp = r.json().get("demo_otp") if r.status_code == 200 else None
+r = post("/auth/verify-otp", {"mobile": NOPC_MOBILE, "otp": nopc_otp or ""})
+nopc_created = r.status_code == 200
+# Now attempt passcode-login WITHOUT having set a passcode
+r = post("/auth/passcode-login", {"mobile": NOPC_MOBILE, "passcode": "1234"})
+ok = r.status_code == 401
+detail = r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else r.text[:120]
+record("4.7 passcode-login on account w/o passcode → 401 generic", ok,
+       f"status={r.status_code}, detail={detail!r}")
+
+r = post("/auth/set-passcode", {"passcode": "1234"})  # no auth header
+ok = r.status_code == 401
+record("4.8 set-passcode without Auth → 401", ok,
+       f"status={r.status_code}, detail={r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else r.text[:120]}")
+
+# We need an auth token to send 5-digit
+r = post("/auth/set-passcode", {"passcode": "12345"}, token=existing_token)
+ok = r.status_code == 400
+record("4.9 set-passcode 5 digits → 400", ok,
+       f"status={r.status_code}, detail={r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else r.text[:120]}")
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+# ---------------------------------------------------------------------------
+# 5. Brute-force protection (informational only)
+# ---------------------------------------------------------------------------
+print("\n=== 5. BRUTE-FORCE behaviour (informational) ===")
+codes = []
+for i in range(8):
+    r = post("/auth/passcode-login", {"mobile": EXISTING_MOBILE, "passcode": "0000"})
+    codes.append(r.status_code)
+unique = set(codes)
+no_lockout = unique == {401}
+# Now ensure the correct passcode still works (no permanent lockout side-effect)
+r = post("/auth/passcode-login", {"mobile": EXISTING_MOBILE, "passcode": EXISTING_PASSCODE})
+correct_still_works = r.status_code == 200
+record("5.1 8x wrong attempts — codes captured", True,
+       f"status_codes={codes}, lockout={'NO' if no_lockout else 'YES (>=1 non-401 returned)'}")
+record("5.2 Correct passcode still works AFTER 8 wrong attempts", correct_still_works,
+       f"status={r.status_code}  (informational — brute-force protection NOT implemented server-side)")
+
+
+# ---------------------------------------------------------------------------
+# 6. Regression — protected endpoints with freshly-issued JWT
+# ---------------------------------------------------------------------------
+print("\n=== 6. REGRESSION (protected endpoints) ===")
+fresh_token = r.json().get("access_token") if r.status_code == 200 else existing_token
+# /dashboard
+r = get("/dashboard", token=fresh_token)
+ok = r.status_code == 200
+record("6.1 GET /api/v1/dashboard with new JWT → 200", ok,
+       f"status={r.status_code}, keys={list(r.json().keys())[:6] if r.status_code==200 else r.text[:120]}")
+
+# /borrowers (alias for /clients via v1 middleware)
+r = get("/borrowers", token=fresh_token)
+ok = r.status_code == 200 and isinstance(r.json(), list)
+record("6.2 GET /api/v1/borrowers with new JWT → 200 (list)", ok,
+       f"status={r.status_code}, count={len(r.json()) if r.status_code==200 else '-'}")
+
+# Also assert legacy /api/auth/* mirror works
+print("\n=== 7. LEGACY /api/auth/* mirror ===")
+r = requests.get(f"{API_LEGACY}/auth/has-passcode", params={"mobile": EXISTING_MOBILE}, timeout=15)
+ok = r.status_code == 200 and r.json().get("has_passcode") is True
+record("7.1 GET /api/auth/has-passcode (legacy) → 200 true", ok,
+       f"status={r.status_code}, body={r.text[:120]}")
+
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+print("\n" + "=" * 70)
+passed = sum(1 for _, p, _ in results if p)
+total = len(results)
+print(f"PASSED {passed}/{total}")
+fails = [r for r in results if not r[1]]
+if fails:
+    print("\nFAILED CASES:")
+    for n, _, ev in fails:
+        print(f"  ❌ {n}  {ev}")
+exit(0 if not fails else 1)

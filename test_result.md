@@ -1019,6 +1019,79 @@ backend:
           7. /api/* legacy alias also works (L1): GET /api/auth/has-passcode → 200.
 
           No backend code modified. All endpoints behave per spec.
+      - working: true
+        agent: "testing"
+        comment: |
+          Iteration-24 production-scenario re-verification — 31/31 PASS on live
+          backend (https://lending-hub-63.preview.emergentagent.com). All cases
+          executed against /api/v1/auth/* (with /api/auth/* mirror smoke-checked).
+          Test script: /app/backend_test.py.
+
+          1. HAPPY-PATH (9876543210 / 5678 — current passcode per
+             /app/memory/test_credentials.md):
+             • GET /auth/has-passcode → 200 {has_passcode:true}.
+             • POST /auth/passcode-login → 200 + JWT; decoded exp-iat = 2,592,000s
+               = 30.0000 days (≥ 29*86400 ✓).
+             • POST /auth/verify-passcode (5678, Auth) → 200 {"ok":true}, response
+               keys = ['ok'] only — NO new access_token issued (matches spec).
+             • POST /auth/verify-passcode (0000, Auth) → 401 detail="Wrong passcode.".
+
+          2. SIGN-UP → SET-PASSCODE → PASSCODE-LOGIN (mobile 9000000077, name
+             "QA User"; auto-rotates if collision detected from prior runs):
+             • send-otp(signup) → 200 + demo_otp captured.
+             • verify-otp → 200, has_passcode:false, access_token returned.
+             • set-passcode "1111" (Auth) → 200 {"ok":true,"has_passcode":true}.
+             • has-passcode → 200 {has_passcode:true}.
+             • passcode-login "1111" → 200 + new JWT.
+
+          3. FORGOT / RESET (same 9000000077):
+             • send-otp(reset) → 200 + demo_otp captured.
+             • reset-passcode (otp + new "2222") → 200 + JWT + has_passcode:true.
+             • passcode-login old "1111" → 401 (overwritten correctly).
+             • passcode-login new "2222" → 200.
+             • Reuse same reset OTP a second time → 400 "Reset OTP not found.
+               Request a new one." (OTP correctly consumed/deleted on first use).
+             • send-otp(reset) for unknown mobile 9000000888 → 404
+               "No account found for that mobile.".
+
+          4. VALIDATION / EDGE CASES:
+             • has-passcode mobile="" → 200 {has_passcode:false}.
+             • has-passcode mobile="abc" → 200 {has_passcode:false} (non-digits
+               stripped → "" → returns false).
+             • has-passcode mobile="9999999999" (no account) → 200
+               {has_passcode:false}. ✓ no enumeration leak.
+             • passcode-login passcode="" → 400 "Passcode must be 4 digits.".
+             • passcode-login passcode="12" → 400 same detail.
+             • passcode-login passcode="abcd" → 400 same detail.
+             • passcode-login on account WITHOUT passcode set → 401
+               "Invalid mobile or passcode." (generic — does not distinguish
+               "no passcode" vs "wrong passcode", correct behaviour).
+             • set-passcode without Authorization header → 401
+               "Missing or invalid auth token".
+             • set-passcode passcode="12345" (5 digits, Auth) → 400
+               "Passcode must be 4 digits.".
+
+          5. BRUTE-FORCE PROTECTION (INFORMATIONAL ONLY — current state):
+             • 8 consecutive wrong attempts for 9876543210 → all 8 returned 401,
+               status_codes=[401,401,401,401,401,401,401,401].
+             • Correct passcode "5678" still succeeds (200) immediately after 8
+               wrong attempts. ⚠️ NO server-side rate-limiting / lockout is
+               currently in place. Per the review request this is reported as
+               informational and not flagged as a failure.
+
+          6. REGRESSION on freshly-issued JWT:
+             • GET /api/v1/dashboard → 200 (keys: total_funded, total_repaid,
+               expected_returns, active_loans, completed_loans, overdue_count, …).
+             • GET /api/v1/borrowers → 200, list of 13 clients.
+
+          7. LEGACY /api/auth/* mirror:
+             • GET /api/auth/has-passcode?mobile=9876543210 → 200
+               {has_passcode:true} (v1 alias middleware confirms parity).
+
+          IMPORTANT side-effect for downstream agents: the test in section 5
+          required leaving the canonical passcode for 9876543210 intact, so the
+          credential is STILL "5678" as documented in
+          /app/memory/test_credentials.md. No backend code was modified.
 
   - task: "Unicode ₹ PDF font fix (iteration 17)"
     implemented: true

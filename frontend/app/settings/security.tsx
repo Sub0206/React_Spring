@@ -26,7 +26,9 @@ export default function SecurityScreen() {
       setPcSet(false);
       return;
     }
-    setPcSet(await checkHasPasscode(user.mobile));
+    const has = await checkHasPasscode(user.mobile);
+    // Treat unknown (null) as the prior value rather than flipping flags.
+    if (has !== null) setPcSet(has);
   }, [user?.mobile]);
 
   useEffect(() => {

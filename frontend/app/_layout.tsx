@@ -50,19 +50,34 @@ function AuthGate() {
   // Source of truth = server (`/auth/has-passcode`). The AppState-driven
   // re-lock (and the actual sessionUnlocked flag) live in AuthProvider so
   // they're proper React state and trigger re-renders here.
+  // `hasServerPasscode` tri-state: true | false | null (unknown / network error).
+  // While null we DO NOT route — better to wait than to push the user into the
+  // wrong screen because of a transient connectivity blip on cold start.
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       if (!user) {
         setHasServerPasscode(false);
         return;
       }
-      try {
+      // Retry up to 3× if the call returns null (network blip).
+      for (let attempt = 0; attempt < 3 && !cancelled; attempt++) {
         const has = await checkHasPasscode(user.mobile);
-        setHasServerPasscode(has);
-      } catch {
-        setHasServerPasscode(null);
+        if (cancelled) return;
+        if (has !== null) {
+          setHasServerPasscode(has);
+          return;
+        }
+        // Backoff before retrying
+        await new Promise((res) => setTimeout(res, 800 * (attempt + 1)));
       }
+      // After 3 failed attempts we still don't know. Leave `hasServerPasscode`
+      // as null so the AuthGate stays on the loading state. The user can pull
+      // to refresh / re-open the app to retry.
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [user]);
 
   // Derived routing decisions — pure, no side effects, no race conditions.

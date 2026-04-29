@@ -17,8 +17,12 @@ export type User = {
 /** Re-lock the app after this many ms of being in actual background.
  * Brief 'inactive' transitions (file picker, share sheet, permission dialog,
  * keyboard) MUST NOT trip the re-lock — that's what caused "passcode keeps
- * asking" on the first native build. */
-const RELOCK_AFTER_BG_MS = 30_000;
+ * asking" on the first native build.
+ *
+ * 5 minutes is the standard production threshold for finance apps — long
+ * enough that screen timeouts / app switches don't re-lock the user, short
+ * enough that a stolen unlocked phone can't get back in. */
+const RELOCK_AFTER_BG_MS = 5 * 60 * 1000;
 
 type AuthCtx = {
   user: User | null;
@@ -86,7 +90,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (elapsed < RELOCK_AFTER_BG_MS) return;
         try {
           const has = await checkHasPasscode(user.mobile);
-          if (has) setSessionUnlocked(false);
+          // Only re-lock when we got a CONFIRMED `true`. On network errors
+          // (`null`) we keep the user unlocked rather than risk a false-lock.
+          if (has === true) setSessionUnlocked(false);
         } catch {/* ignore network failures */}
       }
       lastState = next;

@@ -108,7 +108,15 @@ export default function AuthScreen() {
         return;
       }
       // Sign-in path:
-      if (has) {
+      if (has === null) {
+        Alert.alert(
+          "Couldn't reach server",
+          "Please check your connection and try again."
+        );
+        setBusy(false);
+        return;
+      }
+      if (has === true) {
         // Returning user with server-side passcode → go straight to passcode entry.
         router.replace({ pathname: "/passcode", params: { mode: "login", mobile } } as any);
         return;
