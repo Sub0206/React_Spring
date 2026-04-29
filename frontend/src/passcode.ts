@@ -112,7 +112,15 @@ export async function setBiometricEnabled(on: boolean): Promise<void> {
   await AsyncStorage.setItem(BIO_ENABLED_KEY, on ? "true" : "false");
 }
 
-export async function promptBiometric(reason = "Unlock LendIQ"): Promise<boolean> {
+// ---- Session-level unlock flag ----
+// True when the user has unlocked the app this session via passcode/biometric.
+// Reset on logout. Lives in this module so both AuthGate and Logout can update it
+// without circular imports.
+let _sessionUnlocked = false;
+export function isSessionUnlocked(): boolean { return _sessionUnlocked; }
+export function markSessionUnlocked(): void { _sessionUnlocked = true; }
+export function clearSessionUnlock(): void { _sessionUnlocked = false; }
+
   if (Platform.OS === "web") return false;
   try {
     const r = await LocalAuthentication.authenticateAsync({

@@ -10,6 +10,7 @@ import {
   promptBiometric, setBiometricEnabled,
 } from "../src/passcode";
 import { useAuth } from "../src/auth";
+import { markSessionUnlocked } from "../src/passcode";
 
 type Mode = "verify" | "create" | "confirm";
 
@@ -106,6 +107,7 @@ export default function PasscodeScreen() {
     // verify
     const r = await verifyPasscode(code);
     if (r.ok) {
+      markSessionUnlocked();
       router.replace((params.redirect as any) || "/(tabs)/dashboard");
     } else if (r.error === "locked") {
       setLockUntil(r.unlockAt || Date.now() + 30_000);
@@ -127,6 +129,7 @@ export default function PasscodeScreen() {
   const tryBiometric = async () => {
     const ok = await promptBiometric("Unlock LendIQ");
     if (ok) {
+      markSessionUnlocked();
       router.replace((params.redirect as any) || "/(tabs)/dashboard");
     }
   };

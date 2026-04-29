@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { api, saveToken, clearToken, getToken } from "./api";
+import { clearSessionUnlock } from "./passcode";
 
 export type User = {
   user_id: string;

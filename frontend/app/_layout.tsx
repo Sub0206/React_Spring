@@ -10,12 +10,14 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { StatusBar } from "expo-status-bar";
 import { Colors } from "../src/theme";
 import { ThemeProvider, useTheme } from "../src/themeContext";
+import { hasPasscode, isSessionUnlocked } from "../src/passcode";
 import { View, ActivityIndicator } from "react-native";
 
 function AuthGate() {
   const { user, loading, googleExchange } = useAuth();
   const segments = useSegments();
   const router = useRouter();
+  const [needsPasscode, setNeedsPasscode] = useState<boolean | null>(null);
 
   // Handle Emergent Google auth return with #session_id= in URL hash (web preview)
   useEffect(() => {
@@ -44,24 +46,68 @@ function AuthGate() {
     })();
   }, []);
 
+  // Re-check passcode requirement whenever the user changes
   useEffect(() => {
-    if (loading) return;
-    const inAuth = segments[0] === undefined || segments[0] === "index";
-    const onOnboarding = segments[0] === "onboarding";
+    (async () => {
+      if (!user) { setNeedsPasscode(false); return; }
+      try {
+        const has = await hasPasscode();
+        setNeedsPasscode(has && !isSessionUnlocked());
+      } catch {
+        setNeedsPasscode(false);
+      }
+    })();
+  }, [user]);
+
+  useEffect(() => {
+    if (loading || needsPasscode === null) return;
+    const cur = segments[0] || "";
+    const inAuth = cur === "" || cur === "index";
+    const onOnboarding = cur === "onboarding";
+    const onPasscode = cur === "passcode";
+
     if (!user && !inAuth && !onOnboarding) {
       router.replace("/");
-    } else if (user && (inAuth || onOnboarding)) {
+    } else if (user && needsPasscode && !onPasscode) {
+      router.replace({ pathname: "/passcode", params: { mode: "verify" } } as any);
+    } else if (user && !needsPasscode && (inAuth || onOnboarding || onPasscode)) {
       router.replace("/(tabs)/dashboard");
     }
-  }, [user, loading, segments]);
+  }, [user, loading, segments, needsPasscode]);
 
-  if (loading) {
+  if (loading || needsPasscode === null) {
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: Colors.bg }}>
         <ActivityIndicator size="large" color={Colors.primary} />
       </View>
     );
   }
+
+  return (
+    <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: Colors.bg } }}>
+      <Stack.Screen name="index" />
+      <Stack.Screen name="onboarding" options={{ headerShown: false }} />
+      <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="application/[id]" options={{ presentation: "card" }} />
+      <Stack.Screen name="loan/[id]" options={{ presentation: "card" }} />
+      <Stack.Screen name="client/add" options={{ presentation: "modal" }} />
+      <Stack.Screen name="client/[id]" options={{ presentation: "card" }} />
+      <Stack.Screen name="loan-new/[clientId]" options={{ presentation: "card" }} />
+      <Stack.Screen name="loan-approve/[clientId]" options={{ presentation: "card" }} />
+      <Stack.Screen name="subscribe" options={{ presentation: "card" }} />
+      <Stack.Screen name="settings/language" options={{ presentation: "modal" }} />
+      <Stack.Screen name="settings/audit" options={{ presentation: "card" }} />
+      <Stack.Screen name="settings/help" options={{ presentation: "card" }} />
+      <Stack.Screen name="settings/appearance" options={{ presentation: "card" }} />
+      <Stack.Screen name="settings/security" options={{ presentation: "card" }} />
+      <Stack.Screen name="subscription" options={{ presentation: "card" }} />
+      <Stack.Screen name="overdue" options={{ presentation: "card" }} />
+      <Stack.Screen name="notifications" options={{ presentation: "card" }} />
+      <Stack.Screen name="passcode" options={{ presentation: "card", gestureEnabled: false }} />
+      <Stack.Screen name="assistant" options={{ presentation: "card" }} />
+    </Stack>
+  );
+}
 
   return (
     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: Colors.bg } }}>

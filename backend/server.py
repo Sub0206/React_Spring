@@ -3790,6 +3790,55 @@ async def shutdown():
 
 app.include_router(api)
 
+# ---------------------------------------------------------------------------
+# /api/v1/* alias middleware — Spring Boot path standardization
+# Lets the frontend (and future Spring-Boot drop-in) talk to canonical paths
+# while the existing handlers under /api/* keep serving them.
+# Migration doc: /app/docs/FRONTEND_ENDPOINT_MIGRATION.md
+# ---------------------------------------------------------------------------
+import re as _re_alias
+_REPAY_PAY    = _re_alias.compile(r"^/api/loans/([^/]+)/repayments/([^/]+)/pay$")
+_REPAY_UNDO   = _re_alias.compile(r"^/api/loans/([^/]+)/repayments/([^/]+)/undo$")
+_REPAY_RESCH  = _re_alias.compile(r"^/api/loans/([^/]+)/repayments/([^/]+)/reschedule$")
+
+def _rewrite_v1(path: str) -> str:
+    """Map a /api/v1/<x> path to the legacy /api/<y> handler path."""
+    if not path.startswith("/api/v1/"):
+        return path
+    # Strip the v1 segment first
+    legacy = "/api/" + path[len("/api/v1/"):]
+    # Trim accidental trailing slash (e.g. /api/v1/borrowers/ → /api/borrowers)
+    if legacy.endswith("/") and legacy not in ("/api/",):
+        legacy = legacy.rstrip("/") or "/api"
+    # Borrowers ⇄ Clients
+    if legacy.startswith("/api/borrowers"):
+        legacy = "/api/clients" + legacy[len("/api/borrowers"):]
+    # Repayments restructure
+    m = _REPAY_PAY.match(legacy)
+    if m: return f"/api/loans/{m.group(1)}/repay/{m.group(2)}"
+    m = _REPAY_UNDO.match(legacy)
+    if m: return f"/api/loans/{m.group(1)}/undo-pay/{m.group(2)}"
+    m = _REPAY_RESCH.match(legacy)
+    if m: return f"/api/loans/{m.group(1)}/reschedule/{m.group(2)}"
+    # Audit moved under /reports
+    if legacy == "/api/reports/audit/summary":     return "/api/audit/summary"
+    if legacy == "/api/reports/audit/summary.pdf": return "/api/audit/summary.pdf"
+    # Subscriptions
+    if legacy == "/api/subscriptions/current":     return "/api/subscriptions/me"
+    return legacy
+
+
+@app.middleware("http")
+async def v1_alias_middleware(request: Request, call_next):
+    p = request.url.path
+    if p.startswith("/api/v1/"):
+        new_path = _rewrite_v1(p)
+        if new_path != p:
+            request.scope["path"] = new_path
+            request.scope["raw_path"] = new_path.encode("utf-8")
+    return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
