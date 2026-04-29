@@ -1660,3 +1660,43 @@ Backend logs proved the loop: `POST /auth/verify-passcode 200` repeated 4x in a 
 - `server.py` modular refactor still deferred to next iteration.
 - Push notifications: future.
 
+
+## Updated 2026-04-29 (Agent main): Production-grade hardening of passcode flow
+
+### What we changed
+1. **Re-lock window 30 s → 5 minutes** (`RELOCK_AFTER_BG_MS = 5 * 60 * 1000` in `src/auth.tsx`).
+   Standard for fintech apps — long enough that screen timeouts / brief app switches don't re-prompt the passcode, short enough that a stolen unlocked phone can't get back in.
+
+2. **Tri-state `checkHasPasscode` (`true | false | null`)** in `src/passcode.ts`.
+   Previously returned `false` on any network error. That meant a flaky cold-start could falsely route the user to "Create passcode" or skip the passcode screen entirely. Now:
+   - `null` = "unknown / network error" → callers MUST treat as "don't decide".
+   - AuthGate retries up to 3× with 0.8/1.6/2.4 s backoff before giving up; while unknown the loading spinner is shown rather than routing.
+   - AppState resume re-lock only fires on a confirmed `true` (network errors do not lock the user out).
+   - `index.tsx` shows "Couldn't reach server" alert if the lookup fails on Continue.
+   - `security.tsx` keeps the previous status rather than flickering to "NOT SET".
+
+3. **Sign-up race safety net** — AuthGate's `mustCreatePasscode` now derives from `hasServerPasscode === false` (only when we *know* there's no passcode), not from the previous boolean default.
+
+### Backend re-verification (deep_testing_backend_v2 — 31/31 PASS)
+Full coverage of every auth path:
+- Happy path (existing user 9876543210 / 5678) — has-passcode true, passcode-login + JWT (TTL = **30.0000d**), verify-passcode ok / wrong → 401.
+- Sign-up flow (fresh mobile) — send-otp(signup) → verify-otp `has_passcode:false` → set-passcode → has-passcode true → passcode-login.
+- Reset flow — send-otp(reset) → reset-passcode → new JWT; old passcode 401; new passcode 200; OTP reuse 400; reset for unknown mobile 404.
+- Validation — empty/garbage mobile, non-4-digit passcode, no-auth set-passcode, account-without-passcode login → all proper 400/401 with non-leaky generic messages.
+- Regression — `/api/v1/dashboard` and `/api/v1/borrowers` return 200 with the new tokens.
+- Legacy `/api/auth/*` mirror also works.
+
+### Frontend manual QA (web preview)
+- Sign-in with `9876543210`/`5678` → mobile → Continue → passcode-login → `/dashboard` ✅
+- **60-second idle on dashboard — NO passcode prompt** ✅
+- Quick navigation Requests / Loans / Clients / Profile / Dashboard — NO passcode prompt on any tap ✅
+- Profile → Security & Passcode → renders "Change passcode (ENABLED)" + "Forgot / reset passcode" + 30-day-session info card ✅
+
+### Open / informational
+- **Brute-force protection on `/auth/passcode-login` is NOT yet implemented** (8× wrong attempts in a row all returned 401 with no lockout). Recommend adding a server-side rate-limiter (e.g. 5 fails → 30 s cooldown, doubling on repeat) in a future iteration. **Not blocking** the current production push.
+
+### Still MOCKED / Deferred (unchanged)
+- Razorpay payments still **MOCKED**.
+- `server.py` modular refactor still deferred to next iteration.
+- Push notifications: future.
+
