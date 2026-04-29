@@ -1,138 +1,55 @@
-import { Platform } from "react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import * as SecureStore from "expo-secure-store";
-import * as Crypto from "expo-crypto";
-import * as LocalAuthentication from "expo-local-authentication";
+/**
+ * Passcode session-state utilities (server-driven).
+ *
+ * The 4-digit passcode is now stored ONLY on the backend (`passcode_hash` on the
+ * user document). This module no longer hashes/stores the passcode locally — it
+ * just exposes thin helpers around the auth API endpoints + an in-memory session
+ * lock flag used by the AppState resume guard.
+ *
+ * Removed in this iteration:
+ *   - Local SecureStore passcode hash
+ *   - Biometric (Touch ID / Face ID) — passcode is the only auth method
+ *   - `expo-local-authentication` usage
+ */
+import { api } from "./api";
 
-// Keys
-const PASSCODE_HASH_KEY = "lendiq_passcode_hash";      // SecureStore (native) / AsyncStorage (web fallback)
-const BIO_ENABLED_KEY   = "lendiq_biometric_enabled";  // AsyncStorage
-const FAIL_COUNT_KEY    = "lendiq_pass_fail_count";    // AsyncStorage
-const LOCK_UNTIL_KEY    = "lendiq_pass_lock_until";    // AsyncStorage ISO string
-
-const MAX_FAILS = 5;
-const LOCK_MS   = 30_000; // 30-second lock after 5 fails, then doubles
-
-// ---- Cross-platform secure storage (SecureStore not available on web) ----
-async function secureGet(k: string): Promise<string | null> {
-  if (Platform.OS === "web") return await AsyncStorage.getItem(k);
-  try { return await SecureStore.getItemAsync(k); } catch { return null; }
-}
-async function secureSet(k: string, v: string): Promise<void> {
-  if (Platform.OS === "web") { await AsyncStorage.setItem(k, v); return; }
-  try { await SecureStore.setItemAsync(k, v); } catch { /* noop */ }
-}
-async function secureDel(k: string): Promise<void> {
-  if (Platform.OS === "web") { await AsyncStorage.removeItem(k); return; }
-  try { await SecureStore.deleteItemAsync(k); } catch { /* noop */ }
-}
-
-// ---- Hashing ----
-async function hashPasscode(code: string): Promise<string> {
-  return await Crypto.digestStringAsync(
-    Crypto.CryptoDigestAlgorithm.SHA256,
-    `lendiq::${code}`
-  );
-}
-
-// ---- Public API ----
-export async function hasPasscode(): Promise<boolean> {
-  const h = await secureGet(PASSCODE_HASH_KEY);
-  return !!h && h.length > 0;
-}
-
-export async function setPasscode(code: string): Promise<void> {
-  if (!/^[0-9]{4}$/.test(code)) throw new Error("Passcode must be exactly 4 digits");
-  const h = await hashPasscode(code);
-  await secureSet(PASSCODE_HASH_KEY, h);
-  await AsyncStorage.setItem(FAIL_COUNT_KEY, "0");
-  await AsyncStorage.removeItem(LOCK_UNTIL_KEY);
-}
-
-export async function clearPasscode(): Promise<void> {
-  await secureDel(PASSCODE_HASH_KEY);
-  await AsyncStorage.setItem(BIO_ENABLED_KEY, "false");
-  await AsyncStorage.removeItem(FAIL_COUNT_KEY);
-  await AsyncStorage.removeItem(LOCK_UNTIL_KEY);
-}
-
-export type VerifyResult =
-  | { ok: true }
-  | { ok: false; error: "wrong" | "locked"; attemptsLeft?: number; unlockAt?: number };
-
-export async function verifyPasscode(code: string): Promise<VerifyResult> {
-  const lockUntilStr = await AsyncStorage.getItem(LOCK_UNTIL_KEY);
-  const lockUntil = lockUntilStr ? Number(lockUntilStr) : 0;
-  if (lockUntil && Date.now() < lockUntil) {
-    return { ok: false, error: "locked", unlockAt: lockUntil };
-  }
-  const stored = await secureGet(PASSCODE_HASH_KEY);
-  if (!stored) return { ok: false, error: "wrong" };
-  const h = await hashPasscode(code);
-  if (h === stored) {
-    await AsyncStorage.setItem(FAIL_COUNT_KEY, "0");
-    await AsyncStorage.removeItem(LOCK_UNTIL_KEY);
-    return { ok: true };
-  }
-  // Wrong path — increment fail counter, maybe lock
-  const fc = Number((await AsyncStorage.getItem(FAIL_COUNT_KEY)) || "0") + 1;
-  await AsyncStorage.setItem(FAIL_COUNT_KEY, String(fc));
-  if (fc >= MAX_FAILS) {
-    const lockFor = LOCK_MS * Math.pow(2, Math.min(4, fc - MAX_FAILS));
-    const until = Date.now() + lockFor;
-    await AsyncStorage.setItem(LOCK_UNTIL_KEY, String(until));
-    return { ok: false, error: "locked", unlockAt: until };
-  }
-  return { ok: false, error: "wrong", attemptsLeft: Math.max(0, MAX_FAILS - fc) };
-}
-
-// ---- Biometric ----
-export async function isBiometricAvailable(): Promise<{ hasHardware: boolean; isEnrolled: boolean; types: string[] }> {
-  if (Platform.OS === "web") return { hasHardware: false, isEnrolled: false, types: [] };
-  try {
-    const hw = await LocalAuthentication.hasHardwareAsync();
-    const en = await LocalAuthentication.isEnrolledAsync();
-    const supported = await LocalAuthentication.supportedAuthenticationTypesAsync();
-    const names = supported.map((t) => {
-      if (t === LocalAuthentication.AuthenticationType.FINGERPRINT) return "Fingerprint";
-      if (t === LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION) return "Face ID";
-      if (t === LocalAuthentication.AuthenticationType.IRIS) return "Iris";
-      return "Biometric";
-    });
-    return { hasHardware: hw, isEnrolled: en, types: names };
-  } catch {
-    return { hasHardware: false, isEnrolled: false, types: [] };
-  }
-}
-
-export async function biometricEnabled(): Promise<boolean> {
-  return (await AsyncStorage.getItem(BIO_ENABLED_KEY)) === "true";
-}
-export async function setBiometricEnabled(on: boolean): Promise<void> {
-  await AsyncStorage.setItem(BIO_ENABLED_KEY, on ? "true" : "false");
-}
-
-// ---- Session-level unlock flag ----
-// True when the user has unlocked the app this session via passcode/biometric.
-// Reset on logout. Lives in this module so both AuthGate and Logout can update it
-// without circular imports.
+// ----- in-memory session unlock flag -----
 let _sessionUnlocked = false;
 export function isSessionUnlocked(): boolean { return _sessionUnlocked; }
 export function markSessionUnlocked(): void { _sessionUnlocked = true; }
 export function clearSessionUnlock(): void { _sessionUnlocked = false; }
 
-// ---- Biometric prompt ----
-export async function promptBiometric(
-  reason: string = "Unlock LendIQ"
-): Promise<boolean> {
-  if (Platform.OS === "web") return false;
+// ----- API wrappers -----
+
+export async function checkHasPasscode(mobile: string): Promise<boolean> {
   try {
-    const r = await LocalAuthentication.authenticateAsync({
-      promptMessage: reason,
-      cancelLabel: "Use passcode",
-      disableDeviceFallback: false,
+    const r = await api<{ has_passcode: boolean }>(
+      `/auth/has-passcode?mobile=${encodeURIComponent(mobile)}`,
+      { auth: false }
+    );
+    return !!r.has_passcode;
+  } catch {
+    return false;
+  }
+}
+
+export async function setServerPasscode(passcode: string): Promise<void> {
+  if (!/^\d{4}$/.test(passcode)) throw new Error("Passcode must be 4 digits");
+  await api<{ ok: boolean; has_passcode: boolean }>("/auth/set-passcode", {
+    method: "POST",
+    body: { passcode },
+  });
+}
+
+/** Authenticated check used by the AppState resume lock. Does not issue a new token. */
+export async function verifyServerPasscode(passcode: string): Promise<boolean> {
+  if (!/^\d{4}$/.test(passcode)) return false;
+  try {
+    await api<{ ok: boolean }>("/auth/verify-passcode", {
+      method: "POST",
+      body: { passcode },
     });
-    return !!r.success;
+    return true;
   } catch {
     return false;
   }

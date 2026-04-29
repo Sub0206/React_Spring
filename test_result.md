@@ -1492,3 +1492,46 @@ agent_communication:
 - Full `server.py` modular refactor (routes / services / models / tests) — explicitly deferred to next iteration per user direction.
 - Razorpay (still MOCKED).
 - Push notifications (future).
+
+## Updated 2026-04-29 (Agent main): Server-side passcode auth + 2-step login + biometric removal
+
+### Backend (`/app/backend/server.py`)
+- `JWT_EXP_DAYS` 7 → **30** (30-day session lifetime).
+- Added `passcode_hash` to user documents (bcrypt-hashed via existing `hash_password`).
+- New endpoints (also reachable via `/api/v1/*` thanks to the existing v1 middleware):
+  - `GET /auth/has-passcode?mobile=…` — public probe (returns `false` for both "no account" and "account-without-passcode" — no enumeration leak).
+  - `POST /auth/passcode-login` `{mobile, passcode}` — issues JWT for returning users.
+  - `POST /auth/set-passcode` `{passcode}` (auth) — first-time set or change from Settings.
+  - `POST /auth/verify-passcode` `{passcode}` (auth) — used by the in-session resume lock; does NOT mint a new token.
+  - `POST /auth/reset-passcode` `{mobile, otp, passcode}` — forgot-passcode flow (requires a prior `send-otp purpose=reset`).
+- `send-otp` now accepts `purpose: "reset"`.
+- `verify-otp` response now carries `has_passcode: bool` so the client knows whether to redirect to "set passcode" UX.
+
+**Backend test coverage**: 19/19 PASS (run by deep_testing_backend_v2). JWT exp confirmed at exactly 30 days.
+
+### Frontend
+- `src/passcode.ts` — completely rewritten as a thin wrapper around the new API (`checkHasPasscode`, `setServerPasscode`, `verifyServerPasscode`). All local SecureStore hashing + biometric helpers removed.
+- `src/auth.tsx` — added `passcodeLogin`, `resetPasscode`; `verifyOtp` now returns `{user, hasPasscode}`.
+- `app/index.tsx` — rewritten as a **2-step** flow:
+  1. Mobile → "Continue" → `GET /has-passcode`
+  2. If passcode set → `router.replace("/passcode?mode=login&mobile=…")` (no OTP).
+     Else → OTP → on verify, if `!has_passcode` → `/passcode?mode=create`.
+  - Honors `?reset=<mobile>` query (forgot-passcode entry-point) by auto-firing a reset OTP.
+- `app/passcode.tsx` — supports `login | create | confirm | verify | reset` modes. Biometric UI/calls removed. New `back-btn` for the public passcode-login screen.
+- `app/_layout.tsx`:
+  - AuthGate now allows unauthenticated users to stay on `/passcode` (login + reset modes are public flows).
+  - `checkHasPasscode(user.mobile)` replaces the old local-only `hasPasscode()`.
+  - AppState resume lock still re-locks on background→foreground but defers to the server check + passcode-only verify.
+- `app/settings/security.tsx` — rewritten: passcode-only, "Forgot / reset passcode" row, no biometric switch, status read from server.
+
+### Strict rules (from spec) — verified
+- ❌ No OTP if a passcode exists ✅
+- ❌ Never mix OTP + passcode in the same flow ✅
+- ❌ No biometric anywhere ✅
+- ✅ Local storage holds only the JWT — never an authoritative passcode hash ✅
+
+### E2E manual verification (web preview)
+- Sign-in: `9876543210` → Continue → `/passcode?mode=login&mobile=9876543210` → `5678` → `/dashboard` (full data load, dashboard/transactions/notifications APIs all 200). Confirmed via backend access log.
+- Direct deep-link to `/passcode?mode=login&mobile=…` renders the public passcode-login screen (no auto-redirect to `/`).
+- "Forgot Passcode?" routes back to `/?reset=…` and immediately fires `send-otp purpose=reset` from index.tsx's effect.
+

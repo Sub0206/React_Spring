@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -7,79 +7,175 @@ import {
   Platform,
   ScrollView,
   TouchableOpacity,
-  Image,
   Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { Input, PrimaryButton } from "../src/ui";
 import { Colors, Radii, Shadows, Spacing, Brand } from "../src/theme";
 import { useAuth } from "../src/auth";
+import { checkHasPasscode } from "../src/passcode";
 import { useThemedStyles } from "../src/themeContext";
+
+/**
+ * 2-step authentication flow (server-driven passcode):
+ *
+ *   Step 1 — Mobile entry
+ *      ↓ (Continue)
+ *      → GET /auth/has-passcode?mobile=…
+ *
+ *   If has_passcode:
+ *      → router.replace("/passcode?mode=login&mobile=…")     (no OTP)
+ *
+ *   Else:
+ *      → Step 2 (OTP)
+ *        ├─ Sign in:    purpose=login → verify-otp → if !has_passcode redirect
+ *        │              to "/passcode?mode=create" so the user sets one
+ *        ├─ Sign up:    purpose=signup → verify-otp → "/passcode?mode=create"
+ *        └─ Reset flow: purpose=reset  → "/passcode?mode=reset&mobile=…&otp=…"
+ *
+ *  This screen never mixes OTP + passcode in the same flow, never falls back
+ *  silently to OTP if passcode exists, and never trusts a local passcode hash.
+ */
+type Step = "mobile" | "otp";
+type Intent = "login" | "signup" | "reset";
 
 export default function AuthScreen() {
   const styles = useScreenStyles();
   const { sendOtp, verifyOtp } = useAuth();
   const router = useRouter();
-  const [mode, setMode] = useState<"login" | "signup">("login");
-  const [step, setStep] = useState<"form" | "otp">("form");
+  const params = useLocalSearchParams<{ reset?: string }>();
+
+  const [intent, setIntent] = useState<Intent>("login");
+  const [step, setStep] = useState<Step>("mobile");
   const [mobile, setMobile] = useState("");
   const [name, setName] = useState("");
   const [otp, setOtp] = useState("");
   const [demoOtp, setDemoOtp] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   const sanitizeMobile = (v: string) => v.replace(/[^0-9]/g, "").slice(0, 10);
 
-  const handleSendOtp = async () => {
+  // Forgot-passcode entry-point: arrived here with ?reset=<mobile>
+  // Auto-trigger a reset OTP for that mobile.
+  useEffect(() => {
+    const presetMobile = (params.reset as string) || "";
+    if (presetMobile && presetMobile.length === 10 && step === "mobile" && !busy) {
+      setMobile(presetMobile);
+      setIntent("reset");
+      // small delay so the field shows the value before we move forward
+      const t = setTimeout(() => {
+        void handleSendReset(presetMobile);
+      }, 50);
+      return () => clearTimeout(t);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.reset]);
+
+  const handleSendReset = async (mob: string) => {
+    setBusy(true);
+    try {
+      const res = await sendOtp(mob, "reset");
+      setDemoOtp(res?.demo_otp || null);
+      setStep("otp");
+    } catch (e: any) {
+      Alert.alert("Couldn't start reset", e.message || "Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // ---------- Step 1: Continue with mobile ----------
+  const handleContinue = async () => {
     if (mobile.length !== 10) {
       Alert.alert("Invalid mobile", "Enter a 10-digit mobile number.");
       return;
     }
-    if (mode === "signup" && !name.trim()) {
-      Alert.alert("Name required", "Please enter your name to sign up.");
-      return;
-    }
-    setLoading(true);
+    setBusy(true);
     try {
-      const res = await sendOtp(mobile, mode, name.trim() || undefined);
+      const has = await checkHasPasscode(mobile);
+      if (intent === "signup") {
+        // Sign-up path: validate name then send OTP regardless of passcode state.
+        if (!name.trim()) {
+          Alert.alert("Name required", "Please enter your name to sign up.");
+          setBusy(false);
+          return;
+        }
+        const res = await sendOtp(mobile, "signup", name.trim());
+        setDemoOtp(res?.demo_otp || null);
+        setStep("otp");
+        return;
+      }
+      // Sign-in path:
+      if (has) {
+        // Returning user with server-side passcode → go straight to passcode entry.
+        router.replace({ pathname: "/passcode", params: { mode: "login", mobile } } as any);
+        return;
+      }
+      // No passcode set → fall back to OTP login.
+      const res = await sendOtp(mobile, "login");
       setDemoOtp(res?.demo_otp || null);
       setStep("otp");
     } catch (e: any) {
-      Alert.alert("Couldn't send OTP", e.message || "Please try again.");
+      Alert.alert("Couldn't continue", e.message || "Please try again.");
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
+  // ---------- Step 2: OTP verify (or reset) ----------
   const handleVerifyOtp = async () => {
     if (otp.length < 4) {
       Alert.alert("Enter OTP", "Please enter the 6-digit OTP.");
       return;
     }
-    setLoading(true);
+    if (intent === "reset") {
+      // Hand off to the passcode screen which will POST /auth/reset-passcode
+      // with mobile + otp + new passcode.
+      router.replace(
+        `/passcode?mode=reset&mobile=${encodeURIComponent(mobile)}&otp=${encodeURIComponent(otp)}` as any
+      );
+      return;
+    }
+    setBusy(true);
     try {
-      const user = await verifyOtp(mobile, otp);
-      if (mode === "signup" || !user.subscription_status) {
-        setTimeout(() => router.replace("/subscribe"), 80);
+      const { user, hasPasscode } = await verifyOtp(mobile, otp);
+      if (!hasPasscode) {
+        // First-time / no-passcode-yet user → MUST set a passcode now.
+        router.replace(
+          `/passcode?mode=create&redirect=${encodeURIComponent(
+            !user.subscription_status ? "/subscribe" : "/(tabs)/dashboard"
+          )}` as any
+        );
+        return;
+      }
+      // Has passcode already (rare on this branch, but possible) → straight in.
+      if (!user.subscription_status) {
+        router.replace("/subscribe");
+      } else {
+        router.replace("/(tabs)/dashboard");
       }
     } catch (e: any) {
       Alert.alert("Verification failed", e.message || "Invalid OTP.");
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
-  const resetToForm = () => {
-    setStep("form");
+  const resetToMobile = () => {
+    setStep("mobile");
     setOtp("");
     setDemoOtp(null);
+    if (intent === "reset") setIntent("login");
   };
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={{ flex: 1 }}
+      >
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
           <View style={styles.hero}>
             <View style={styles.logoWrap}>
@@ -93,26 +189,30 @@ export default function AuthScreen() {
           </View>
 
           <View style={styles.card}>
-            {step === "form" ? (
+            {step === "mobile" ? (
               <>
                 <View style={styles.tabs}>
                   <TouchableOpacity
                     testID="tab-login"
-                    onPress={() => setMode("login")}
-                    style={[styles.tab, mode === "login" && styles.tabActive]}
+                    onPress={() => setIntent("login")}
+                    style={[styles.tab, intent === "login" && styles.tabActive]}
                   >
-                    <Text style={[styles.tabText, mode === "login" && styles.tabTextActive]}>Sign in</Text>
+                    <Text style={[styles.tabText, intent === "login" && styles.tabTextActive]}>
+                      Sign in
+                    </Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     testID="tab-signup"
-                    onPress={() => setMode("signup")}
-                    style={[styles.tab, mode === "signup" && styles.tabActive]}
+                    onPress={() => setIntent("signup")}
+                    style={[styles.tab, intent === "signup" && styles.tabActive]}
                   >
-                    <Text style={[styles.tabText, mode === "signup" && styles.tabTextActive]}>Sign up</Text>
+                    <Text style={[styles.tabText, intent === "signup" && styles.tabTextActive]}>
+                      Sign up
+                    </Text>
                   </TouchableOpacity>
                 </View>
 
-                {mode === "signup" && (
+                {intent === "signup" && (
                   <Input
                     testID="input-name"
                     placeholder="Full name"
@@ -124,7 +224,9 @@ export default function AuthScreen() {
                 )}
 
                 <View style={styles.mobileRow}>
-                  <View style={styles.prefix}><Text style={styles.prefixText}>+91</Text></View>
+                  <View style={styles.prefix}>
+                    <Text style={styles.prefixText}>+91</Text>
+                  </View>
                   <Input
                     testID="input-mobile"
                     placeholder="10-digit mobile"
@@ -139,20 +241,32 @@ export default function AuthScreen() {
                 <View style={{ height: Spacing.md }} />
 
                 <PrimaryButton
-                  testID="send-otp-btn"
-                  title={mode === "signup" ? "Sign up with OTP" : "Send OTP"}
-                  onPress={handleSendOtp}
-                  loading={loading}
+                  testID="continue-btn"
+                  title={intent === "signup" ? "Continue" : "Continue"}
+                  onPress={handleContinue}
+                  loading={busy}
                 />
+
+                <Text style={styles.helper}>
+                  {intent === "signup"
+                    ? "We'll send a 6-digit OTP to verify your number."
+                    : "If you already have a passcode set, you'll go straight to the passcode screen."}
+                </Text>
               </>
             ) : (
               <>
                 <View style={styles.otpHeader}>
-                  <TouchableOpacity testID="back-to-form" onPress={resetToForm} style={styles.backChip}>
+                  <TouchableOpacity
+                    testID="back-to-form"
+                    onPress={resetToMobile}
+                    style={styles.backChip}
+                  >
                     <Ionicons name="chevron-back" size={18} color={Colors.textPrimary} />
                   </TouchableOpacity>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.otpTitle}>Verify OTP</Text>
+                    <Text style={styles.otpTitle}>
+                      {intent === "reset" ? "Reset passcode" : "Verify OTP"}
+                    </Text>
                     <Text style={styles.otpSub}>Sent to +91 {mobile}</Text>
                   </View>
                 </View>
@@ -160,7 +274,9 @@ export default function AuthScreen() {
                 {demoOtp && (
                   <View style={styles.demoBanner}>
                     <Ionicons name="bulb" size={16} color={Colors.secondary} />
-                    <Text style={styles.demoText}>Demo OTP: <Text style={{ fontWeight: "800" }}>{demoOtp}</Text></Text>
+                    <Text style={styles.demoText}>
+                      Demo OTP: <Text style={{ fontWeight: "800" }}>{demoOtp}</Text>
+                    </Text>
                   </View>
                 )}
 
@@ -176,12 +292,18 @@ export default function AuthScreen() {
 
                 <PrimaryButton
                   testID="verify-otp-btn"
-                  title="Verify & continue"
+                  title={intent === "reset" ? "Continue" : "Verify & continue"}
                   onPress={handleVerifyOtp}
-                  loading={loading}
+                  loading={busy}
                 />
 
-                <TouchableOpacity testID="resend-otp-btn" onPress={handleSendOtp} style={{ alignSelf: "center", marginTop: Spacing.md }}>
+                <TouchableOpacity
+                  testID="resend-otp-btn"
+                  onPress={() =>
+                    intent === "reset" ? handleSendReset(mobile) : handleContinue()
+                  }
+                  style={{ alignSelf: "center", marginTop: Spacing.md }}
+                >
                   <Text style={{ color: Colors.primary, fontWeight: "700" }}>Resend OTP</Text>
                 </TouchableOpacity>
               </>
@@ -198,56 +320,112 @@ export default function AuthScreen() {
 }
 
 function useScreenStyles() {
-  return useThemedStyles(() => StyleSheet.create({
-  safe: { flex: 1, backgroundColor: Colors.bg },
-  scroll: { padding: Spacing.lg, paddingBottom: Spacing.xxl },
-  hero: { alignItems: "center", marginTop: Spacing.lg, marginBottom: Spacing.lg },
-  logoWrap: {
-    width: 90, height: 90, borderRadius: 24,
-    backgroundColor: Colors.primary,
-    alignItems: "center", justifyContent: "center", marginBottom: Spacing.md, ...Shadows.button,
-  },
-  logoText: { color: "#fff", fontSize: 34, fontWeight: "800", letterSpacing: -1 },
-  title: { fontSize: 38, fontWeight: "800", color: Colors.textPrimary, letterSpacing: -1 },
-  powered: { fontSize: 11, color: Colors.textMuted, fontWeight: "700", letterSpacing: 1.5, marginTop: 2 },
-  subtitle: { fontSize: 15, color: Colors.textSecondary, textAlign: "center", marginTop: 6, lineHeight: 22 },
-  card: { backgroundColor: Colors.surface, borderRadius: Radii.xl, padding: Spacing.lg, marginTop: Spacing.md, ...Shadows.card },
-  tabs: { flexDirection: "row", backgroundColor: Colors.bgAlt, borderRadius: Radii.pill, padding: 4, marginBottom: Spacing.lg },
-  tab: { flex: 1, paddingVertical: 10, borderRadius: Radii.pill, alignItems: "center" },
-  tabActive: { backgroundColor: Colors.surface, ...Shadows.card },
-  tabText: { color: Colors.textSecondary, fontWeight: "700", fontSize: 14 },
-  tabTextActive: { color: Colors.primary },
-  mobileRow: { flexDirection: "row", gap: 8, alignItems: "center" },
-  prefix: {
-    height: 54, paddingHorizontal: 14, borderRadius: Radii.md,
-    borderWidth: 2, borderColor: Colors.border, backgroundColor: Colors.bgAlt,
-    justifyContent: "center",
-  },
-  prefixText: { fontSize: 16, fontWeight: "700", color: Colors.textPrimary },
-  dividerRow: { flexDirection: "row", alignItems: "center", marginVertical: Spacing.md },
-  line: { flex: 1, height: 1, backgroundColor: Colors.borderLight },
-  or: { marginHorizontal: 12, color: Colors.textMuted, fontSize: 12, fontWeight: "600" },
-  googleBtn: {
-    height: 54, borderRadius: Radii.pill, borderWidth: 2, borderColor: Colors.border,
-    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10,
-    backgroundColor: Colors.surface,
-  },
-  googleText: { fontSize: 16, fontWeight: "700", color: Colors.textPrimary },
-  footer: { textAlign: "center", color: Colors.textMuted, fontSize: 12, marginTop: Spacing.lg },
-  otpHeader: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: Spacing.md },
-  backChip: {
-    width: 36, height: 36, borderRadius: 18,
-    backgroundColor: Colors.bgAlt, alignItems: "center", justifyContent: "center",
-  },
-  otpTitle: { fontSize: 20, fontWeight: "800", color: Colors.textPrimary },
-  otpSub: { color: Colors.textSecondary, fontSize: 13, marginTop: 2 },
-  demoBanner: {
-    flexDirection: "row", alignItems: "center", gap: 8,
-    backgroundColor: Colors.secondary + "15", borderRadius: Radii.md,
-    padding: 10, marginBottom: Spacing.md,
-    borderWidth: 1, borderColor: Colors.secondary + "44",
-  },
-  demoText: { color: Colors.textPrimary, fontSize: 13 },
-  }));
+  return useThemedStyles(() =>
+    StyleSheet.create({
+      safe: { flex: 1, backgroundColor: Colors.bg },
+      scroll: { padding: Spacing.lg, paddingBottom: Spacing.xxl },
+      hero: { alignItems: "center", marginTop: Spacing.lg, marginBottom: Spacing.lg },
+      logoWrap: {
+        width: 90,
+        height: 90,
+        borderRadius: 24,
+        backgroundColor: Colors.primary,
+        alignItems: "center",
+        justifyContent: "center",
+        marginBottom: Spacing.md,
+        ...Shadows.button,
+      },
+      logoText: { color: "#fff", fontSize: 34, fontWeight: "800", letterSpacing: -1 },
+      title: {
+        fontSize: 38,
+        fontWeight: "800",
+        color: Colors.textPrimary,
+        letterSpacing: -1,
+      },
+      powered: {
+        fontSize: 11,
+        color: Colors.textMuted,
+        fontWeight: "700",
+        letterSpacing: 1.5,
+        marginTop: 2,
+      },
+      subtitle: {
+        fontSize: 15,
+        color: Colors.textSecondary,
+        textAlign: "center",
+        marginTop: 6,
+        lineHeight: 22,
+      },
+      card: {
+        backgroundColor: Colors.surface,
+        borderRadius: Radii.xl,
+        padding: Spacing.lg,
+        marginTop: Spacing.md,
+        ...Shadows.card,
+      },
+      tabs: {
+        flexDirection: "row",
+        backgroundColor: Colors.bgAlt,
+        borderRadius: Radii.pill,
+        padding: 4,
+        marginBottom: Spacing.lg,
+      },
+      tab: { flex: 1, paddingVertical: 10, borderRadius: Radii.pill, alignItems: "center" },
+      tabActive: { backgroundColor: Colors.surface, ...Shadows.card },
+      tabText: { color: Colors.textSecondary, fontWeight: "700", fontSize: 14 },
+      tabTextActive: { color: Colors.primary },
+      mobileRow: { flexDirection: "row", gap: 8, alignItems: "center" },
+      prefix: {
+        height: 54,
+        paddingHorizontal: 14,
+        borderRadius: Radii.md,
+        borderWidth: 2,
+        borderColor: Colors.border,
+        backgroundColor: Colors.bgAlt,
+        justifyContent: "center",
+      },
+      prefixText: { fontSize: 16, fontWeight: "700", color: Colors.textPrimary },
+      helper: {
+        marginTop: Spacing.md,
+        color: Colors.textMuted,
+        fontSize: 12,
+        textAlign: "center",
+        lineHeight: 18,
+      },
+      footer: {
+        textAlign: "center",
+        color: Colors.textMuted,
+        fontSize: 12,
+        marginTop: Spacing.lg,
+      },
+      otpHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 12,
+        marginBottom: Spacing.md,
+      },
+      backChip: {
+        width: 36,
+        height: 36,
+        borderRadius: 18,
+        backgroundColor: Colors.bgAlt,
+        alignItems: "center",
+        justifyContent: "center",
+      },
+      otpTitle: { fontSize: 20, fontWeight: "800", color: Colors.textPrimary },
+      otpSub: { color: Colors.textSecondary, fontSize: 13, marginTop: 2 },
+      demoBanner: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        backgroundColor: Colors.secondary + "15",
+        borderRadius: Radii.md,
+        padding: 10,
+        marginBottom: Spacing.md,
+        borderWidth: 1,
+        borderColor: Colors.secondary + "44",
+      },
+      demoText: { color: Colors.textPrimary, fontSize: 13 },
+    })
+  );
 }
-

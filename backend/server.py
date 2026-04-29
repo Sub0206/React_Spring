@@ -573,6 +573,22 @@ async def auth_set_passcode(body: SetPasscodeRequest, current: UserPublic = Depe
     return {"ok": True, "has_passcode": True}
 
 
+@api.post("/auth/verify-passcode")
+async def auth_verify_passcode(body: SetPasscodeRequest, current: UserPublic = Depends(get_current_user)):
+    """Authenticated check — used by the in-app resume lock (background→foreground).
+    Does NOT issue a new token; simply validates the passcode against the stored
+    hash for the currently-authenticated user."""
+    code = (body.passcode or "").strip()
+    if not (code.isdigit() and len(code) == 4):
+        raise HTTPException(400, "Passcode must be 4 digits.")
+    user = await db.users.find_one({"user_id": current.user_id}, {"_id": 0, "passcode_hash": 1})
+    if not user or not user.get("passcode_hash"):
+        raise HTTPException(404, "Passcode not set.")
+    if not verify_password(code, user["passcode_hash"]):
+        raise HTTPException(401, "Wrong passcode.")
+    return {"ok": True}
+
+
 @api.post("/auth/reset-passcode", response_model=TokenResponse)
 async def auth_reset_passcode(body: ResetPasscodeRequest):
     """Forgot-passcode flow: user provides mobile + freshly issued OTP (purpose='reset')

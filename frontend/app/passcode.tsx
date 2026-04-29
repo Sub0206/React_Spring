@@ -1,67 +1,77 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, TextInput, Alert, Animated, Platform } from "react-native";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  TextInput,
+  Alert,
+  Animated,
+  Platform,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { Colors, Radii, Shadows, Spacing } from "../src/theme";
 import { PrimaryButton } from "../src/ui";
 import {
-  hasPasscode, setPasscode, verifyPasscode, isBiometricAvailable, biometricEnabled,
-  promptBiometric, setBiometricEnabled,
+  setServerPasscode,
+  verifyServerPasscode,
+  markSessionUnlocked,
 } from "../src/passcode";
 import { useAuth } from "../src/auth";
-import { markSessionUnlocked } from "../src/passcode";
 import { useThemedStyles } from "../src/themeContext";
 
-type Mode = "verify" | "create" | "confirm";
+/**
+ * Passcode screen — server-driven (no biometric).
+ *
+ * Modes:
+ *   - "login":   public; user just entered their mobile and the system found
+ *                a server-side passcode for it. We POST /auth/passcode-login
+ *                to mint a JWT.
+ *   - "create":  authenticated; first-time user just verified OTP and is being
+ *                asked to set a 4-digit passcode → POST /auth/set-passcode.
+ *   - "confirm": internal step after "create" — re-enter to confirm.
+ *   - "verify":  authenticated in-session resume lock (background→foreground).
+ *                POSTs /auth/verify-passcode (no new token issued).
+ *   - "reset":   forgot-passcode flow; user got a fresh OTP (purpose=reset).
+ *                POST /auth/reset-passcode.
+ *
+ * Query params:
+ *   - mode    — one of the above (defaults to "verify")
+ *   - mobile  — required for login/reset modes
+ *   - otp     — required for reset mode (already verified server-side)
+ *   - redirect — optional path to navigate to on success
+ */
+type Mode = "login" | "create" | "confirm" | "verify" | "reset";
 
 export default function PasscodeScreen() {
   const styles = useScreenStyles();
   const router = useRouter();
-  const params = useLocalSearchParams<{ mode?: string; redirect?: string }>();
-  const { logout } = useAuth();
+  const params = useLocalSearchParams<{
+    mode?: string;
+    mobile?: string;
+    otp?: string;
+    redirect?: string;
+  }>();
+  const { logout, passcodeLogin, resetPasscode } = useAuth();
   const initialMode: Mode = (params.mode as Mode) || "verify";
+  const mobile = (params.mobile as string) || "";
+  const resetOtp = (params.otp as string) || "";
 
   const [mode, setMode] = useState<Mode>(initialMode);
   const [code, setCode] = useState("");
-  const [firstCode, setFirstCode] = useState("");  // stored between create → confirm
-  const [status, setStatus] = useState<{ kind: "idle" | "err" | "ok"; msg?: string }>({ kind: "idle" });
-  const [lockUntil, setLockUntil] = useState<number>(0);
-  const [bio, setBio] = useState<{ ok: boolean; enabled: boolean; name: string } | null>(null);
+  const [firstCode, setFirstCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<{ kind: "idle" | "err" | "ok"; msg?: string }>({
+    kind: "idle",
+  });
   const shake = useRef(new Animated.Value(0)).current;
   const hiddenRef = useRef<TextInput>(null);
 
-  // Load biometric availability (for verify mode only)
   useEffect(() => {
-    (async () => {
-      if (mode !== "verify") return;
-      const avail = await isBiometricAvailable();
-      const en = await biometricEnabled();
-      setBio({ ok: avail.hasHardware && avail.isEnrolled, enabled: en, name: avail.types[0] || "Biometric" });
-      // Auto-trigger biometric if enabled
-      if (avail.hasHardware && avail.isEnrolled && en) {
-        setTimeout(() => { void tryBiometric(); }, 350);
-      }
-    })();
+    setTimeout(() => hiddenRef.current?.focus(), 180);
   }, [mode]);
-
-  // Lock countdown
-  useEffect(() => {
-    if (!lockUntil) return;
-    const t = setInterval(() => {
-      if (Date.now() >= lockUntil) {
-        setLockUntil(0);
-        setStatus({ kind: "idle" });
-        clearInterval(t);
-      } else {
-        setStatus({ kind: "err", msg: `Too many attempts. Try again in ${Math.ceil((lockUntil - Date.now()) / 1000)}s.` });
-      }
-    }, 500);
-    return () => clearInterval(t);
-  }, [lockUntil]);
-
-  // Focus hidden input
-  useEffect(() => { setTimeout(() => hiddenRef.current?.focus(), 200); }, [mode]);
 
   const shakeBox = () => {
     Animated.sequence([
@@ -80,7 +90,10 @@ export default function PasscodeScreen() {
   };
 
   const submit = useCallback(async () => {
+    if (busy) return;
     if (code.length !== 4) return;
+
+    // ---- create flow: collect first code, advance to confirm ----
     if (mode === "create") {
       setFirstCode(code);
       setCode("");
@@ -88,6 +101,8 @@ export default function PasscodeScreen() {
       setStatus({ kind: "idle" });
       return;
     }
+
+    // ---- confirm flow: must equal firstCode, then call set-passcode ----
     if (mode === "confirm") {
       if (code !== firstCode) {
         setStatus({ kind: "err", msg: "Passcodes don't match. Try again." });
@@ -97,77 +112,181 @@ export default function PasscodeScreen() {
         shakeBox();
         return;
       }
+      setBusy(true);
       try {
-        await setPasscode(code);
+        await setServerPasscode(code);
         setStatus({ kind: "ok", msg: "Passcode set ✓" });
-        setTimeout(() => router.replace((params.redirect as any) || "/(tabs)/dashboard"), 400);
+        markSessionUnlocked();
+        setTimeout(
+          () => router.replace((params.redirect as any) || "/(tabs)/dashboard"),
+          400
+        );
       } catch (e: any) {
-        Alert.alert("Error", e.message);
+        setBusy(false);
+        Alert.alert("Couldn't set passcode", e.message || "Please try again.");
       }
       return;
     }
-    // verify
-    const r = await verifyPasscode(code);
-    if (r.ok) {
-      markSessionUnlocked();
-      router.replace((params.redirect as any) || "/(tabs)/dashboard");
-    } else if (r.error === "locked") {
-      setLockUntil(r.unlockAt || Date.now() + 30_000);
-      setCode("");
-      shakeBox();
-    } else {
-      setStatus({
-        kind: "err",
-        msg: typeof r.attemptsLeft === "number" ? `Wrong passcode. ${r.attemptsLeft} attempts left.` : "Wrong passcode.",
-      });
-      setCode("");
-      shakeBox();
+
+    // ---- login flow (public): mobile + passcode → token ----
+    if (mode === "login") {
+      if (!mobile) {
+        Alert.alert("Missing mobile", "Please go back and enter your mobile.");
+        return;
+      }
+      setBusy(true);
+      try {
+        await passcodeLogin(mobile, code);
+        // passcodeLogin marks session unlocked internally
+        router.replace((params.redirect as any) || "/(tabs)/dashboard");
+      } catch (e: any) {
+        setBusy(false);
+        setStatus({ kind: "err", msg: e.message || "Invalid passcode." });
+        setCode("");
+        shakeBox();
+      }
+      return;
     }
-  }, [code, mode, firstCode, router, params.redirect, shake]);
 
-  // Auto-submit on 4 digits
-  useEffect(() => { if (code.length === 4) submit(); /* eslint-disable-next-line */ }, [code]);
+    // ---- reset flow: mobile + reset OTP + new passcode ----
+    if (mode === "reset") {
+      if (!firstCode) {
+        // First entry — capture and ask to confirm
+        setFirstCode(code);
+        setCode("");
+        setStatus({ kind: "idle" });
+        return;
+      }
+      // Second entry — confirm matches
+      if (code !== firstCode) {
+        setStatus({ kind: "err", msg: "Passcodes don't match. Try again." });
+        setCode("");
+        setFirstCode("");
+        shakeBox();
+        return;
+      }
+      setBusy(true);
+      try {
+        await resetPasscode(mobile, resetOtp, code);
+        setStatus({ kind: "ok", msg: "Passcode updated ✓" });
+        setTimeout(() => router.replace("/(tabs)/dashboard"), 400);
+      } catch (e: any) {
+        setBusy(false);
+        setStatus({ kind: "err", msg: e.message || "Reset failed." });
+        setCode("");
+        setFirstCode("");
+        shakeBox();
+      }
+      return;
+    }
 
-  const tryBiometric = async () => {
-    const ok = await promptBiometric("Unlock LendIQ");
+    // ---- verify flow (in-session resume lock) ----
+    setBusy(true);
+    const ok = await verifyServerPasscode(code);
+    setBusy(false);
     if (ok) {
       markSessionUnlocked();
       router.replace((params.redirect as any) || "/(tabs)/dashboard");
+    } else {
+      setStatus({ kind: "err", msg: "Wrong passcode." });
+      setCode("");
+      shakeBox();
     }
-  };
+  }, [
+    busy,
+    code,
+    mode,
+    firstCode,
+    mobile,
+    resetOtp,
+    passcodeLogin,
+    resetPasscode,
+    router,
+    params.redirect,
+  ]);
+
+  // Auto-submit on 4 digits (only for non-create steps to avoid premature advance)
+  useEffect(() => {
+    if (code.length === 4) submit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code]);
 
   const onForgot = () => {
     Alert.alert(
       "Forgot passcode?",
-      "Sign out and verify with OTP again. You'll be asked to create a new passcode.",
+      "We'll send an OTP to your registered mobile so you can set a new passcode.",
       [
         { text: "Cancel", style: "cancel" },
         {
-          text: "Sign out",
-          style: "destructive",
+          text: "Continue",
           onPress: async () => {
-            await setBiometricEnabled(false);
-            // We intentionally keep the stored hash in case user remembers — but you
-            // can optionally clear it here. We just logout and send back to OTP.
+            // For "verify" mode the user is logged in — we logout first so the
+            // login screen owns the reset flow. The login screen reads the
+            // `?reset=<mobile>` query param and immediately starts a reset OTP.
             await logout();
-            router.replace("/");
+            if (mobile) {
+              router.replace(`/?reset=${encodeURIComponent(mobile)}` as any);
+            } else {
+              router.replace("/" as any);
+            }
           },
         },
-      ],
+      ]
     );
   };
 
-  const title = mode === "verify" ? "Enter passcode" : mode === "create" ? "Create passcode" : "Confirm passcode";
+  const title =
+    mode === "verify"
+      ? "Enter passcode"
+      : mode === "login"
+      ? "Welcome back"
+      : mode === "reset"
+      ? firstCode
+        ? "Confirm new passcode"
+        : "Create new passcode"
+      : mode === "create"
+      ? "Create passcode"
+      : "Confirm passcode";
+
   const subtitle =
-    mode === "verify"   ? "Please enter a valid passcode to enter the app"
-    : mode === "create" ? "Set a 4-digit passcode for faster secure access"
-                        : "Re-enter your passcode to confirm";
+    mode === "verify"
+      ? "Enter your 4-digit passcode to continue"
+      : mode === "login"
+      ? `Enter your 4-digit passcode for +91 ${mobile}`
+      : mode === "reset"
+      ? firstCode
+        ? "Re-enter the new passcode"
+        : "Set a new 4-digit passcode for your account"
+      : mode === "create"
+      ? "Set a 4-digit passcode for faster, secure access"
+      : "Re-enter your passcode to confirm";
+
+  const showBack = mode === "login" || mode === "reset";
+  const showForgot = mode === "verify" || mode === "login";
 
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.top}>
+        {showBack ? (
+          <TouchableOpacity
+            testID="back-btn"
+            onPress={() => router.replace("/")}
+            style={styles.logoutBtn}
+          >
+            <Ionicons name="chevron-back" size={22} color={Colors.textPrimary} />
+          </TouchableOpacity>
+        ) : (
+          <View />
+        )}
         {mode === "verify" && (
-          <TouchableOpacity testID="logout-btn" onPress={onForgot} style={styles.logoutBtn}>
+          <TouchableOpacity
+            testID="logout-btn"
+            onPress={async () => {
+              await logout();
+              router.replace("/");
+            }}
+            style={styles.logoutBtn}
+          >
             <Ionicons name="log-out-outline" size={22} color={Colors.textPrimary} />
           </TouchableOpacity>
         )}
@@ -185,19 +304,16 @@ export default function PasscodeScreen() {
               <View
                 key={i}
                 testID={`pass-box-${i}`}
-                style={[
-                  styles.box,
-                  filled && styles.boxFilled,
-                  err && styles.boxErr,
-                ]}
+                style={[styles.box, filled && styles.boxFilled, err && styles.boxErr]}
               >
-                {filled && <View style={[styles.dot, err && { backgroundColor: Colors.danger }]} />}
+                {filled && (
+                  <View style={[styles.dot, err && { backgroundColor: Colors.danger }]} />
+                )}
               </View>
             );
           })}
         </Animated.View>
 
-        {/* Hidden input that captures digits (works on all platforms incl. web) */}
         <TextInput
           ref={hiddenRef}
           testID="pass-input"
@@ -211,33 +327,34 @@ export default function PasscodeScreen() {
           caretHidden
         />
 
-        {mode === "verify" && (
+        {showForgot && (
           <TouchableOpacity testID="forgot-btn" onPress={onForgot} style={{ marginTop: 18 }}>
             <Text style={styles.forgotLink}>Forgot Passcode?</Text>
           </TouchableOpacity>
         )}
 
-        {status.kind === "err" && (
-          <Text style={styles.errMsg}>{status.msg}</Text>
-        )}
-        {status.kind === "ok" && (
-          <Text style={styles.okMsg}>{status.msg}</Text>
-        )}
-
-        {/* Biometric entry point */}
-        {mode === "verify" && bio?.ok && bio.enabled && (
-          <TouchableOpacity testID="bio-btn" onPress={tryBiometric} style={styles.bioBtn} activeOpacity={0.8}>
-            <Ionicons name="finger-print" size={44} color={Colors.primary} />
-            <Text style={styles.bioTxt}>Continue with {bio.name}</Text>
-          </TouchableOpacity>
-        )}
+        {status.kind === "err" && <Text style={styles.errMsg}>{status.msg}</Text>}
+        {status.kind === "ok" && <Text style={styles.okMsg}>{status.msg}</Text>}
       </View>
 
       <View style={styles.footer}>
         <PrimaryButton
           testID="verify-btn"
-          title={mode === "verify" ? "Verify" : mode === "create" ? "Next" : "Confirm"}
-          disabled={code.length !== 4 || !!lockUntil}
+          title={
+            mode === "verify"
+              ? "Verify"
+              : mode === "login"
+              ? "Sign in"
+              : mode === "reset"
+              ? firstCode
+                ? "Update passcode"
+                : "Next"
+              : mode === "create"
+              ? "Next"
+              : "Confirm"
+          }
+          disabled={code.length !== 4 || busy}
+          loading={busy}
           onPress={submit}
         />
       </View>
@@ -246,41 +363,54 @@ export default function PasscodeScreen() {
 }
 
 function useScreenStyles() {
-  return useThemedStyles(() => StyleSheet.create({
-  safe: { flex: 1, backgroundColor: Colors.bg },
-  top: { flexDirection: "row", justifyContent: "flex-end", paddingHorizontal: Spacing.md, paddingTop: Spacing.sm },
-  logoutBtn: {
-    width: 40, height: 40, borderRadius: 20,
-    backgroundColor: Colors.surface, alignItems: "center", justifyContent: "center",
-    borderWidth: 1, borderColor: Colors.borderLight, ...Shadows.card,
-  },
-  content: { flex: 1, paddingHorizontal: Spacing.lg, paddingTop: Spacing.lg },
-  title: { fontSize: 30, fontWeight: "800", color: Colors.textPrimary, letterSpacing: -0.6 },
-  subtitle: { marginTop: 8, color: Colors.textSecondary, fontSize: 13, lineHeight: 20 },
-
-  boxesRow: { flexDirection: "row", gap: 14, marginTop: Spacing.xl },
-  box: {
-    width: 56, height: 60, borderRadius: 10,
-    backgroundColor: Colors.surface,
-    borderWidth: 1, borderColor: Colors.borderLight,
-    alignItems: "center", justifyContent: "center",
-  },
-  boxFilled: { borderColor: Colors.primary },
-  boxErr: { borderColor: Colors.danger, backgroundColor: Colors.danger + "10" },
-  dot: { width: 14, height: 14, borderRadius: 7, backgroundColor: Colors.primary },
-
-  hiddenInput: { position: "absolute", width: 1, height: 1, opacity: 0 },
-
-  forgotLink: { color: Colors.primary, fontWeight: "800", fontSize: 14 },
-  errMsg: { marginTop: 14, color: Colors.danger, fontSize: 13, fontWeight: "700" },
-  okMsg:  { marginTop: 14, color: Colors.success, fontSize: 13, fontWeight: "800" },
-
-  bioBtn: {
-    marginTop: Spacing.xl, alignSelf: "center", alignItems: "center", padding: 10,
-  },
-  bioTxt: { marginTop: 8, color: Colors.primary, fontWeight: "800", fontSize: 14 },
-
-  footer: { padding: Spacing.lg, paddingBottom: Spacing.xl },
-  }));
+  return useThemedStyles(() =>
+    StyleSheet.create({
+      safe: { flex: 1, backgroundColor: Colors.bg },
+      top: {
+        flexDirection: "row",
+        justifyContent: "space-between",
+        alignItems: "center",
+        paddingHorizontal: Spacing.md,
+        paddingTop: Spacing.sm,
+      },
+      logoutBtn: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        backgroundColor: Colors.surface,
+        alignItems: "center",
+        justifyContent: "center",
+        borderWidth: 1,
+        borderColor: Colors.borderLight,
+        ...Shadows.card,
+      },
+      content: { flex: 1, paddingHorizontal: Spacing.lg, paddingTop: Spacing.lg },
+      title: {
+        fontSize: 30,
+        fontWeight: "800",
+        color: Colors.textPrimary,
+        letterSpacing: -0.6,
+      },
+      subtitle: { marginTop: 8, color: Colors.textSecondary, fontSize: 13, lineHeight: 20 },
+      boxesRow: { flexDirection: "row", gap: 14, marginTop: Spacing.xl },
+      box: {
+        width: 56,
+        height: 60,
+        borderRadius: 10,
+        backgroundColor: Colors.surface,
+        borderWidth: 1,
+        borderColor: Colors.borderLight,
+        alignItems: "center",
+        justifyContent: "center",
+      },
+      boxFilled: { borderColor: Colors.primary },
+      boxErr: { borderColor: Colors.danger, backgroundColor: Colors.danger + "10" },
+      dot: { width: 14, height: 14, borderRadius: 7, backgroundColor: Colors.primary },
+      hiddenInput: { position: "absolute", width: 1, height: 1, opacity: 0 },
+      forgotLink: { color: Colors.primary, fontWeight: "800", fontSize: 14 },
+      errMsg: { marginTop: 14, color: Colors.danger, fontSize: 13, fontWeight: "700" },
+      okMsg: { marginTop: 14, color: Colors.success, fontSize: 13, fontWeight: "800" },
+      footer: { padding: Spacing.lg, paddingBottom: Spacing.xl },
+    })
+  );
 }
-

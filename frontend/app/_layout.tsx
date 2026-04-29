@@ -10,7 +10,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { StatusBar } from "expo-status-bar";
 import { Colors } from "../src/theme";
 import { ThemeProvider, useTheme } from "../src/themeContext";
-import { hasPasscode, isSessionUnlocked, clearSessionUnlock } from "../src/passcode";
+import { isSessionUnlocked, clearSessionUnlock, checkHasPasscode } from "../src/passcode";
 import { View, ActivityIndicator, AppState, AppStateStatus } from "react-native";
 
 function AuthGate() {
@@ -46,12 +46,14 @@ function AuthGate() {
     })();
   }, []);
 
-  // Re-check passcode requirement whenever the user changes
+  // Re-check passcode requirement whenever the user changes.
+  // The server is the source of truth — we ask /auth/has-passcode for the
+  // current user's mobile.
   useEffect(() => {
     (async () => {
       if (!user) { setNeedsPasscode(false); return; }
       try {
-        const has = await hasPasscode();
+        const has = await checkHasPasscode(user.mobile);
         setNeedsPasscode(has && !isSessionUnlocked());
       } catch {
         setNeedsPasscode(false);
@@ -60,16 +62,17 @@ function AuthGate() {
   }, [user]);
 
   // Re-lock the app whenever it returns from background. This forces the user
-  // to re-authenticate via passcode/biometric on resume — required behaviour
-  // for production-grade auth gates.
+  // to re-authenticate via passcode on resume — required behaviour for
+  // production-grade auth gates. Biometric was removed per the auth-flow
+  // refactor; passcode is the only auth method.
   useEffect(() => {
     let lastState: AppStateStatus = AppState.currentState;
     const sub = AppState.addEventListener("change", async (next) => {
       const cameFromBg = (lastState === "background" || lastState === "inactive") && next === "active";
       lastState = next;
-      if (!cameFromBg) return;
+      if (!cameFromBg || !user) return;
       try {
-        const has = await hasPasscode();
+        const has = await checkHasPasscode(user.mobile);
         if (has) {
           clearSessionUnlock();
           setNeedsPasscode(true);
@@ -77,7 +80,7 @@ function AuthGate() {
       } catch {/* ignore */}
     });
     return () => sub.remove();
-  }, []);
+  }, [user]);
 
   useEffect(() => {
     if (loading || needsPasscode === null) return;
@@ -86,7 +89,10 @@ function AuthGate() {
     const onOnboarding = cur === "onboarding";
     const onPasscode = cur === "passcode";
 
-    if (!user && !inAuth && !onOnboarding) {
+    // Note: /passcode is public for `mode=login` and `mode=reset` (used as
+    // a step in the un-authenticated 2-step login flow). We therefore allow
+    // unauthenticated users to stay on the passcode screen.
+    if (!user && !inAuth && !onOnboarding && !onPasscode) {
       router.replace("/");
     } else if (user && needsPasscode && !onPasscode) {
       router.replace({ pathname: "/passcode", params: { mode: "verify" } } as any);
