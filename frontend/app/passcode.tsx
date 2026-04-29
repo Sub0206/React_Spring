@@ -54,7 +54,7 @@ export default function PasscodeScreen() {
     otp?: string;
     redirect?: string;
   }>();
-  const { logout, passcodeLogin, resetPasscode } = useAuth();
+  const { logout, passcodeLogin, resetPasscode, refresh } = useAuth();
   const initialMode: Mode = (params.mode as Mode) || "verify";
   const mobile = (params.mobile as string) || "";
   const resetOtp = (params.otp as string) || "";
@@ -117,6 +117,9 @@ export default function PasscodeScreen() {
         await setServerPasscode(code);
         setStatus({ kind: "ok", msg: "Passcode set ✓" });
         markSessionUnlocked();
+        // Refresh user — forces AuthGate to re-evaluate has-passcode and clear
+        // its mustCreatePasscode flag so the upcoming router.replace sticks.
+        await refresh();
         setTimeout(
           () => router.replace((params.redirect as any) || "/(tabs)/dashboard"),
           400

@@ -1535,3 +1535,22 @@ agent_communication:
 - Direct deep-link to `/passcode?mode=login&mobile=…` renders the public passcode-login screen (no auto-redirect to `/`).
 - "Forgot Passcode?" routes back to `/?reset=…` and immediately fires `send-otp purpose=reset` from index.tsx's effect.
 
+
+## Updated 2026-04-29 (Agent main): Bug fixes after auth refactor
+
+### 1. Document analysis crashed the app — FIXED
+- `loan-new/[clientId].tsx` had a helper `MetricCard()` declared **after** the styles hook in the file. The earlier bulk refactor only injected `const styles = useScreenStyles()` into components positioned BEFORE the styles block, so `MetricCard` referenced a now-undefined module-level `styles`.
+- Symptom: clicking "Analyze statement" → `Uncaught Error: styles is not defined` → app crash overlay.
+- Fix: added `const styles = useScreenStyles();` to `MetricCard`. Verified end-to-end: upload PDF → analyze → analysis screen renders with risk/parsing/charts/cards (backend `POST /api/loan-apps/analyze-statement 200 OK`).
+- Confirmed via static check that no other file has a "function uses `styles.` but lacks the hook" pattern.
+
+### 2. Sign-up routed straight to dashboard (skipping passcode creation) — FIXED
+- AuthGate's redirect effect was racing with `index.tsx`'s post-OTP `router.replace("/passcode?mode=create")`: as soon as `setUser` fired, the gate's `user && !needsPasscode && inAuth` branch shot the user to `/dashboard`.
+- Fix: AuthGate now tracks a separate `mustCreatePasscode` flag (set when `checkHasPasscode(user.mobile)` returns false). The redirect priority is now `verify > create > dashboard`. Once the user submits a passcode (`POST /auth/set-passcode`), `passcode.tsx` calls `useAuth().refresh()` so the gate re-evaluates and the `redirect` target sticks.
+
+### Verification
+- Existing user (9876543210 / 5678): mobile → Continue → passcode-login → dashboard ✅
+- Sign-up (new mobile + name → OTP → set passcode → confirm) now lands on dashboard via `mustCreatePasscode` gate ✅
+- Document analysis (upload PDF on loan-new) → analysis screen with charts, risk score, eligibility ✅
+- All backend access logs show 200s for has-passcode / passcode-login / verify-otp / analyze-statement.
+

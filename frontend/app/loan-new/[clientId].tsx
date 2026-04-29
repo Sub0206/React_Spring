@@ -889,6 +889,7 @@ function useScreenStyles() {
 
 
 function MetricCard({ icon, label, value, color }: { icon: any; label: string; value: string; color: string }) {
+  const styles = useScreenStyles();
   return (
     <View style={[styles.metricCard, { borderColor: color + "33" }]}>
       <View style={[styles.metricIcon, { backgroundColor: color + "1A" }]}>

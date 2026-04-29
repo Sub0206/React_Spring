@@ -18,6 +18,7 @@ function AuthGate() {
   const segments = useSegments();
   const router = useRouter();
   const [needsPasscode, setNeedsPasscode] = useState<boolean | null>(null);
+  const [mustCreatePasscode, setMustCreatePasscode] = useState<boolean>(false);
 
   // Handle Emergent Google auth return with #session_id= in URL hash (web preview)
   useEffect(() => {
@@ -51,12 +52,18 @@ function AuthGate() {
   // current user's mobile.
   useEffect(() => {
     (async () => {
-      if (!user) { setNeedsPasscode(false); return; }
+      if (!user) {
+        setNeedsPasscode(false);
+        setMustCreatePasscode(false);
+        return;
+      }
       try {
         const has = await checkHasPasscode(user.mobile);
+        setMustCreatePasscode(!has);
         setNeedsPasscode(has && !isSessionUnlocked());
       } catch {
         setNeedsPasscode(false);
+        setMustCreatePasscode(false);
       }
     })();
   }, [user]);
@@ -96,10 +103,14 @@ function AuthGate() {
       router.replace("/");
     } else if (user && needsPasscode && !onPasscode) {
       router.replace({ pathname: "/passcode", params: { mode: "verify" } } as any);
-    } else if (user && !needsPasscode && (inAuth || onOnboarding || onPasscode)) {
+    } else if (user && mustCreatePasscode && !onPasscode) {
+      // First-time / no-passcode-yet user — force them to set one before
+      // anything else. Honors any ?redirect target the caller already set.
+      router.replace({ pathname: "/passcode", params: { mode: "create" } } as any);
+    } else if (user && !needsPasscode && !mustCreatePasscode && (inAuth || onOnboarding)) {
       router.replace("/(tabs)/dashboard");
     }
-  }, [user, loading, segments, needsPasscode]);
+  }, [user, loading, segments, needsPasscode, mustCreatePasscode]);
 
   if (loading || needsPasscode === null) {
     return (

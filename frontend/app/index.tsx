@@ -133,9 +133,10 @@ export default function AuthScreen() {
     if (intent === "reset") {
       // Hand off to the passcode screen which will POST /auth/reset-passcode
       // with mobile + otp + new passcode.
-      router.replace(
-        `/passcode?mode=reset&mobile=${encodeURIComponent(mobile)}&otp=${encodeURIComponent(otp)}` as any
-      );
+      router.replace({
+        pathname: "/passcode",
+        params: { mode: "reset", mobile, otp },
+      } as any);
       return;
     }
     setBusy(true);
@@ -143,11 +144,11 @@ export default function AuthScreen() {
       const { user, hasPasscode } = await verifyOtp(mobile, otp);
       if (!hasPasscode) {
         // First-time / no-passcode-yet user → MUST set a passcode now.
-        router.replace(
-          `/passcode?mode=create&redirect=${encodeURIComponent(
-            !user.subscription_status ? "/subscribe" : "/(tabs)/dashboard"
-          )}` as any
-        );
+        const redirect = !user.subscription_status ? "/subscribe" : "/(tabs)/dashboard";
+        router.replace({
+          pathname: "/passcode",
+          params: { mode: "create", redirect },
+        } as any);
         return;
       }
       // Has passcode already (rare on this branch, but possible) → straight in.
