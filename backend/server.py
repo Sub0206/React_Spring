@@ -28,7 +28,7 @@ DB_NAME = os.environ["DB_NAME"]
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret")
 JWT_ALG = "HS256"
-JWT_EXP_DAYS = 7
+JWT_EXP_DAYS = 30
 
 # Register Unicode fonts globally so all PDF endpoints correctly render ₹, ₨,
 # accented characters, and em-dashes. reportlab's built-in Helvetica and the
@@ -85,7 +85,7 @@ class UserPublic(BaseModel):
 class SendOtpRequest(BaseModel):
     mobile: str
     name: Optional[str] = None
-    purpose: Literal["signup", "login"] = "login"
+    purpose: Literal["signup", "login", "reset"] = "login"
 
 class VerifyOtpRequest(BaseModel):
     mobile: str
@@ -97,6 +97,21 @@ class GoogleAuthRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     user: UserPublic
+    has_passcode: bool = False  # so the client knows whether to redirect to "set passcode" after OTP
+
+class PasscodeLoginRequest(BaseModel):
+    mobile: str
+    passcode: str  # 4 digits
+
+class SetPasscodeRequest(BaseModel):
+    passcode: str  # 4 digits — set by an authenticated user
+
+class ResetPasscodeRequest(BaseModel):
+    """OTP-driven reset: the user proves ownership of the mobile via an active OTP record
+    (purpose='reset') and supplies a new passcode in the same call."""
+    mobile: str
+    otp: str
+    passcode: str
 
 class ClientModel(BaseModel):
     client_id: str
@@ -450,6 +465,8 @@ async def auth_send_otp(body: SendOtpRequest):
         raise HTTPException(400, "Mobile already registered. Please sign in.")
     if body.purpose == "signup" and not (body.name and body.name.strip()):
         raise HTTPException(400, "Name is required for sign up.")
+    if body.purpose == "reset" and not existing:
+        raise HTTPException(404, "No account found for that mobile.")
     otp = _generate_otp()
     await db.otps.delete_many({"mobile": mobile, "scope": "auth"})
     await db.otps.insert_one({
@@ -501,9 +518,95 @@ async def auth_verify_otp(body: VerifyOtpRequest):
 
     await db.otps.delete_one({"mobile": mobile, "scope": "auth"})
     token = create_access_token(user["user_id"])
-    public = {k: v for k, v in user.items() if k not in ("password_hash", "mobile_verified")}
+    public = {k: v for k, v in user.items() if k not in ("password_hash", "passcode_hash", "mobile_verified")}
     public.setdefault("email", None)
-    return TokenResponse(access_token=token, user=UserPublic(**public))
+    has_pc = bool(user.get("passcode_hash"))
+    return TokenResponse(access_token=token, user=UserPublic(**public), has_passcode=has_pc)
+
+
+# ----------------- Passcode auth (server-side) -----------------
+
+@api.get("/auth/has-passcode")
+async def auth_has_passcode(mobile: str):
+    """Public probe: does this mobile have an account with a server-side passcode?
+    The frontend calls this BEFORE deciding between the passcode screen and OTP.
+    Always returns 200 (no enumeration leak — `false` covers both 'no account' and
+    'account but no passcode set yet')."""
+    m = _normalize_mobile(mobile)
+    if len(m) != 10:
+        return {"mobile": m, "has_passcode": False}
+    user = await db.users.find_one({"mobile": m}, {"_id": 0, "passcode_hash": 1})
+    return {"mobile": m, "has_passcode": bool(user and user.get("passcode_hash"))}
+
+
+@api.post("/auth/passcode-login", response_model=TokenResponse)
+async def auth_passcode_login(body: PasscodeLoginRequest):
+    """Returning users sign in with mobile + 4-digit passcode (no OTP)."""
+    mobile = _normalize_mobile(body.mobile)
+    code = (body.passcode or "").strip()
+    if not (code.isdigit() and len(code) == 4):
+        raise HTTPException(400, "Passcode must be 4 digits.")
+    user = await db.users.find_one({"mobile": mobile}, {"_id": 0})
+    if not user or not user.get("passcode_hash"):
+        # Generic message — don't leak which side failed.
+        raise HTTPException(401, "Invalid mobile or passcode.")
+    if not verify_password(code, user["passcode_hash"]):
+        raise HTTPException(401, "Invalid mobile or passcode.")
+    token = create_access_token(user["user_id"])
+    public = {k: v for k, v in user.items() if k not in ("password_hash", "passcode_hash", "mobile_verified")}
+    public.setdefault("email", None)
+    return TokenResponse(access_token=token, user=UserPublic(**public), has_passcode=True)
+
+
+@api.post("/auth/set-passcode")
+async def auth_set_passcode(body: SetPasscodeRequest, current: UserPublic = Depends(get_current_user)):
+    """Authenticated endpoint — used right after OTP login (first time) or when
+    the user resets/changes their passcode from Settings."""
+    code = (body.passcode or "").strip()
+    if not (code.isdigit() and len(code) == 4):
+        raise HTTPException(400, "Passcode must be 4 digits.")
+    h = hash_password(code)
+    await db.users.update_one(
+        {"user_id": current.user_id},
+        {"$set": {"passcode_hash": h, "passcode_set_at": datetime.now(timezone.utc)}},
+    )
+    return {"ok": True, "has_passcode": True}
+
+
+@api.post("/auth/reset-passcode", response_model=TokenResponse)
+async def auth_reset_passcode(body: ResetPasscodeRequest):
+    """Forgot-passcode flow: user provides mobile + freshly issued OTP (purpose='reset')
+    + new passcode. We verify the OTP, store the new passcode hash, and issue a JWT
+    so the client can drop them straight on the dashboard."""
+    mobile = _normalize_mobile(body.mobile)
+    code = (body.passcode or "").strip()
+    if not (code.isdigit() and len(code) == 4):
+        raise HTTPException(400, "Passcode must be 4 digits.")
+    rec = await db.otps.find_one({"mobile": mobile, "scope": "auth"}, {"_id": 0})
+    if not rec or rec.get("purpose") != "reset":
+        raise HTTPException(400, "Reset OTP not found. Request a new one.")
+    expires_at = rec["expires_at"]
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < datetime.now(timezone.utc):
+        raise HTTPException(400, "OTP expired. Please request a new one.")
+    if rec["otp"] != body.otp.strip():
+        raise HTTPException(400, "Invalid OTP.")
+    user = await db.users.find_one({"mobile": mobile}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "No account found.")
+    h = hash_password(code)
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"passcode_hash": h, "passcode_set_at": datetime.now(timezone.utc)}},
+    )
+    await db.otps.delete_one({"mobile": mobile, "scope": "auth"})
+    token = create_access_token(user["user_id"])
+    public = {k: v for k, v in user.items() if k not in ("password_hash", "passcode_hash", "mobile_verified")}
+    public.setdefault("email", None)
+    return TokenResponse(access_token=token, user=UserPublic(**public), has_passcode=True)
 
 @api.post("/auth/google", response_model=TokenResponse)
 async def google_auth(body: GoogleAuthRequest):

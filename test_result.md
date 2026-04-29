@@ -959,10 +959,66 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Notification delete + Application loan_id linkage (iteration 19)"
+    - "Server-side passcode auth (iteration 23)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
+
+backend:
+  - task: "Server-side passcode auth (iteration 23)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Iteration-23 passcode auth — 19/19 PASS on live backend
+          (https://lending-hub-63.preview.emergentagent.com), all via /api/v1/* paths
+          (legacy /api/* alias also smoke-checked). Test script: /app/backend_test.py.
+
+          1. PUBLIC has-passcode probe:
+            • GET /api/v1/auth/has-passcode?mobile=9876543210 → 200
+              {"mobile":"9876543210","has_passcode":false}.
+            • Unknown mobile 9999999999 → 200 {"has_passcode":false} (no enumeration leak).
+
+          2. END-TO-END HAPPY PATH (mobile 9876543210):
+            • POST /auth/send-otp {purpose:"login"} → 200, demo_otp returned.
+            • POST /auth/verify-otp → 200 with {access_token, user, has_passcode:false}
+              (has_passcode field present + boolean type).
+            • POST /auth/set-passcode {"passcode":"1234"} (Bearer) → 200 {"ok":true,"has_passcode":true}.
+            • GET /auth/has-passcode?mobile=9876543210 → 200 {"has_passcode":true}.
+            • POST /auth/passcode-login {"mobile":..., "passcode":"1234"} → 200 with valid
+              access_token + full user object + has_passcode:true.
+            • POST /auth/passcode-login passcode="0000" → 401 detail="Invalid mobile or passcode.".
+
+          3. VALIDATION:
+            • set-passcode {"passcode":"12"} (Bearer) → 400 "Passcode must be 4 digits.".
+            • set-passcode {"passcode":"1234"} WITHOUT Authorization → 401 "Missing or invalid auth token".
+            • passcode-login {"passcode":"abc"} → 400 "Passcode must be 4 digits.".
+
+          4. FORGOT/RESET FLOW:
+            • send-otp {purpose:"reset"} → 200 demo_otp.
+            • POST /auth/reset-passcode {mobile, otp, passcode:"5678"} → 200 with
+              {access_token, user, has_passcode:true}.
+            • Old passcode "1234" → 401 (no longer accepted, hash overwritten).
+            • New passcode "5678" → 200 with valid token.
+
+          5. JWT LIFETIME: decoded passcode-login token → exp - iat == 30.0000 days
+             (delta_days=30.0000, within ±0.5d tolerance). JWT_EXP_DAYS=30 confirmed.
+
+          6. SIGNUP REGRESSION (brand-new mobile 9000000001, name "Test User"):
+            • send-otp {purpose:"signup", name:"Test User"} → 200 demo_otp.
+            • verify-otp → 200 with {access_token, user(user_id=user_d1ea24bb7a68,
+              mobile=9000000001, name="Test User"), has_passcode:false}. New user
+              correctly auto-created and JWT issued.
+
+          7. /api/* legacy alias also works (L1): GET /api/auth/has-passcode → 200.
+
+          No backend code modified. All endpoints behave per spec.
 
   - task: "Unicode ₹ PDF font fix (iteration 17)"
     implemented: true
