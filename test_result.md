@@ -1400,3 +1400,39 @@ agent_communication:
 
       Task flipped: needs_retesting=false, working=true. No backend code modified. Script: /app/backend_test.py.
 
+
+
+## Updated 2026-04-29 (Agent main): Dynamic Theme + Auth Gate edge cases + Notification Bell
+
+### Frontend changes summary
+1. **Dynamic Theme Switching (proper, no app restart hack)**
+   - Added `useThemedStyles(factory)` hook in `/app/frontend/src/themeContext.tsx`. It runs the factory through `useMemo([resolved, remountKey])`, so styles re-build live on theme change.
+   - Removed the global `key={remountKey}` remount in `_layout.tsx` (it caused full route reset and was no longer needed).
+   - Bulk-refactored 26 screens via `/tmp/refactor_styles.py`: every module-level `const styles = StyleSheet.create({...})` was hoisted into a `function useScreenStyles()` factory and consumed inside each component as `const styles = useScreenStyles()`.
+   - Multi-component file `/app/frontend/src/ui.tsx` was manually refactored with a shared `useUIStyles()` hook.
+   - Result: theme switch (Light / Dark / Match system) repaints every screen instantly without restart, and the Appearance preview reflects the chosen theme live.
+
+2. **Auth Gate Edge Cases** (`/app/frontend/app/_layout.tsx`, `/app/frontend/src/auth.tsx`, `/app/frontend/src/passcode.ts`)
+   - `auth.logout()` now calls `clearSessionUnlock()` before token clear → user must re-authenticate next session.
+   - Added `AppState` listener in `AuthGate`: on background → foreground transition, if a passcode is set, `_sessionUnlocked` is reset and the passcode/biometric screen is forced.
+   - Cold-start coverage retained (`_sessionUnlocked` defaults to `false`).
+   - Fixed an orphaned function body in `passcode.ts` (lost `promptBiometric` declaration during prior edit) — now properly exported and consumed by `passcode.tsx`.
+
+3. **Notification Bell with badge & subtle animation** (new component `/app/frontend/src/notificationBell.tsx`, wired in `/app/frontend/app/(tabs)/dashboard.tsx`)
+   - Fetches `/api/v1/notifications`, counts `read=false` client-side (`9+` cap on display).
+   - Refreshes on `useFocusEffect` AND every 30 s while app is active (paused in background, refreshed on resume).
+   - One-shot scale bounce + dot ripple **only when count transitions 0 → >0 or grows** (avoids the constant looping animation the user explicitly didn't want).
+
+### Manual verification
+- Logged in (mobile 9876543210 + demo OTP) → dashboard renders, bell visible top-right.
+- Profile → Appearance → toggled Light / Dark → preview card and screen chrome both update instantly.
+- Switching themes no longer kicks the user back to dashboard (was a side-effect of the previous remount-key hack).
+- Bundling clean on web. No JS runtime errors after refactor.
+
+### Backend
+- Untouched in this iteration. `/api/v1/*` aliases from prior session still in place.
+
+### Open / deferred
+- Full `server.py` modular refactor (routes / services / models / tests) — explicitly deferred to next iteration per user direction.
+- Razorpay (still MOCKED).
+- Push notifications (future).

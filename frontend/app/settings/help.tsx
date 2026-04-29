@@ -6,6 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
 import { api } from "../../src/api";
 import { useI18n } from "../../src/i18n";
+import { useThemedStyles } from "../../src/themeContext";
 
 type Msg = { role: "user" | "bot"; text: string; ts: number };
 
@@ -18,6 +19,7 @@ const SUGGESTIONS = [
 ];
 
 export default function HelpChatbot() {
+  const styles = useScreenStyles();
   const router = useRouter();
   const { locale } = useI18n();
   const [msgs, setMsgs] = useState<Msg[]>([
@@ -113,7 +115,8 @@ export default function HelpChatbot() {
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   topBar: { flexDirection: "row", alignItems: "center", paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm },
   backBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.surface, alignItems: "center", justifyContent: "center", ...Shadows.card },
@@ -129,4 +132,6 @@ const styles = StyleSheet.create({
   inputRow: { flexDirection: "row", alignItems: "center", gap: 8, padding: Spacing.md, backgroundColor: Colors.surface, borderTopWidth: 1, borderTopColor: Colors.borderLight },
   input: { flex: 1, backgroundColor: Colors.bgAlt, borderRadius: Radii.pill, paddingHorizontal: 14, paddingVertical: 10, fontSize: 14, color: Colors.textPrimary },
   sendBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: Colors.primary, alignItems: "center", justifyContent: "center" },
-});
+  }));
+}
+

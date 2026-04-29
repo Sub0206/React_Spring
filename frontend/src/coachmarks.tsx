@@ -6,6 +6,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Colors, Radii, Shadows, Spacing } from "./theme";
+import { useThemedStyles } from "./themeContext";
 
 const DONE_KEY = "lendiq_tour_done";
 
@@ -67,6 +68,7 @@ const SCREENS: CoachStep[] = [
 ];
 
 export function CoachmarksProvider({ children }: { children: React.ReactNode }) {
+  const styles = useScreenStyles();
   const [visible, setVisible] = useState(false);
   const [idx, setIdx] = useState(0);
   const fade = React.useRef(new Animated.Value(0)).current;
@@ -167,7 +169,8 @@ export async function resetCoachmarks() {
   try { await AsyncStorage.removeItem(DONE_KEY); } catch {}
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   dim: { flex: 1, backgroundColor: "rgba(15,23,42,0.74)" },
   close: { position: "absolute", top: 50, right: 18, width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(255,255,255,0.18)", alignItems: "center", justifyContent: "center" },
   brandStrip: { position: "absolute", top: 54, left: 18, flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "rgba(255,255,255,0.12)", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999 },
@@ -185,4 +188,6 @@ const styles = StyleSheet.create({
   btnGhostTxt: { color: Colors.textSecondary, fontWeight: "700", fontSize: 13 },
   btnPrimary: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 18, paddingVertical: 10, borderRadius: Radii.pill },
   btnPrimaryTxt: { color: "#fff", fontWeight: "800", fontSize: 13, letterSpacing: 0.2 },
-});
+  }));
+}
+

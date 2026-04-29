@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useRef, useState } from 
 import { View, Text, Modal, StyleSheet, Animated, Easing, TouchableOpacity, Platform } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Colors, Radii, Shadows, Spacing } from "./theme";
+import { useThemedStyles } from "./themeContext";
 
 export type DialogTone = "success" | "danger" | "warning" | "info" | "primary";
 
@@ -41,6 +42,7 @@ type Ctx = {
 const DialogContext = createContext<Ctx | null>(null);
 
 export function DialogProvider({ children }: { children: React.ReactNode }) {
+  const styles = useScreenStyles();
   const [visible, setVisible] = useState(false);
   const [opts, setOpts] = useState<DialogOptions | null>(null);
   const translate = useRef(new Animated.Value(40)).current;
@@ -154,7 +156,8 @@ export function useDialog(): Ctx {
   return ctx;
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   backdrop: {
     flex: 1, backgroundColor: "rgba(15,23,42,0.55)",
     justifyContent: "center", alignItems: "center", paddingHorizontal: Spacing.lg,
@@ -186,4 +189,6 @@ const styles = StyleSheet.create({
   },
   btnGhost: { backgroundColor: Colors.bgAlt },
   actionText: { fontSize: 14, fontWeight: "800", letterSpacing: 0.3 },
-});
+  }));
+}
+

@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useColorScheme } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { applyTheme, type ThemeMode } from "./theme";
+import { applyTheme, Colors, type ThemeMode } from "./theme";
 
 type Ctx = {
   mode: ThemeMode;
@@ -67,3 +67,22 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 }
 
 export function useTheme() { return useContext(ThemeCtx); }
+
+/**
+ * Hook for building theme-reactive styles.
+ *
+ * Usage:
+ *   const styles = useThemedStyles((C) => StyleSheet.create({
+ *     safe: { flex: 1, backgroundColor: C.bg },
+ *     title: { color: C.textPrimary },
+ *   }));
+ *
+ * The factory receives the live `Colors` palette and re-runs whenever the
+ * resolved theme ("light" | "dark") or remountKey changes — which means
+ * every screen automatically restyles on theme switch without an app reload.
+ */
+export function useThemedStyles<T>(factory: (c: typeof Colors) => T): T {
+  const { resolved, remountKey } = useContext(ThemeCtx);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useMemo(() => factory(Colors), [resolved, remountKey]);
+}

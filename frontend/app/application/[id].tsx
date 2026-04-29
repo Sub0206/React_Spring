@@ -6,6 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "../../src/api";
 import { Card, InitialsAvatar, Input, PrimaryButton } from "../../src/ui";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
+import { useThemedStyles } from "../../src/themeContext";
 
 type Client = {
   client_id: string;
@@ -45,6 +46,7 @@ function maskPan(pan?: string) {
 }
 
 export default function ApplicationSummary() {
+  const styles = useScreenStyles();
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -418,6 +420,7 @@ export default function ApplicationSummary() {
 }
 
 function SumItem({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
+  const styles = useScreenStyles();
   return (
     <View style={[styles.sumItem, highlight && styles.sumItemHi]}>
       <Text style={styles.sumLabel}>{label}</Text>
@@ -427,6 +430,7 @@ function SumItem({ label, value, highlight }: { label: string; value: string; hi
 }
 
 function KVItem({ k, v, color }: { k: string; v: string; color?: string }) {
+  const styles = useScreenStyles();
   return (
     <View style={styles.kv}>
       <Text style={styles.kvKey}>{k}</Text>
@@ -435,7 +439,8 @@ function KVItem({ k, v, color }: { k: string; v: string; color?: string }) {
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   topBar: { flexDirection: "row", alignItems: "center", paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm },
   backBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.surface, alignItems: "center", justifyContent: "center", ...Shadows.card },
@@ -520,4 +525,6 @@ const styles = StyleSheet.create({
 
   modalBackdrop: { flex: 1, backgroundColor: "rgba(15,23,42,0.55)", justifyContent: "flex-end" },
   modalSheet: { backgroundColor: Colors.surface, padding: Spacing.lg, borderTopLeftRadius: Radii.xl, borderTopRightRadius: Radii.xl },
-});
+  }));
+}
+

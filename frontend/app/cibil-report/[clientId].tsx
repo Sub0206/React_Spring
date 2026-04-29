@@ -7,6 +7,7 @@ import Svg, { Circle, G, Path } from "react-native-svg";
 import { Card, PrimaryButton } from "../../src/ui";
 import { Colors, Radii, Spacing } from "../../src/theme";
 import { downloadPdf } from "../../src/pdf";
+import { useThemedStyles } from "../../src/themeContext";
 
 type Cibil = {
   score: number;
@@ -34,6 +35,7 @@ const impactIcon = (i?: string): any =>
   i === "positive" ? "arrow-up-circle" : i === "negative" ? "arrow-down-circle" : "remove-circle";
 
 export default function CibilReport() {
+  const styles = useScreenStyles();
   const { clientId, data } = useLocalSearchParams<{ clientId: string; data?: string }>();
   const router = useRouter();
 
@@ -249,6 +251,7 @@ function LegendSeg({ label, from, to, color }: { label: string; from: number; to
 }
 
 function ProgressBar({ pct, color }: { pct: number; color: string }) {
+  const styles = useScreenStyles();
   const v = Math.max(0, Math.min(100, pct));
   return (
     <View style={styles.barTrack}>
@@ -258,6 +261,7 @@ function ProgressBar({ pct, color }: { pct: number; color: string }) {
 }
 
 function AccBox({ icon, label, value, color }: { icon: any; label: string; value: string; color: string }) {
+  const styles = useScreenStyles();
   return (
     <View style={styles.accBox}>
       <View style={[styles.accIcon, { backgroundColor: color + "1A" }]}>
@@ -269,7 +273,8 @@ function AccBox({ icon, label, value, color }: { icon: any; label: string; value
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   topBar: {
     flexDirection: "row", alignItems: "center",
@@ -323,4 +328,6 @@ const styles = StyleSheet.create({
     paddingVertical: 12, borderRadius: Radii.pill, backgroundColor: Colors.primary + "15",
   },
   downloadText: { color: Colors.primary, fontWeight: "800", fontSize: 14 },
-});
+  }));
+}
+

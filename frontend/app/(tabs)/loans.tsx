@@ -5,6 +5,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "../../src/api";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
+import { useThemedStyles } from "../../src/themeContext";
 
 type RepayEntry = {
   month: number; due_date: string; amount: number;
@@ -80,6 +81,7 @@ const FILTERS: { key: "all" | Health; label: string }[] = [
 ];
 
 export default function Loans() {
+  const styles = useScreenStyles();
   const router = useRouter();
   const params = useLocalSearchParams<{ filter?: string }>();
   const [loans, setLoans] = useState<Loan[]>([]);
@@ -301,7 +303,8 @@ export default function Loans() {
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
 
   header: {
@@ -387,4 +390,6 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { fontSize: 18, fontWeight: "800", color: Colors.textPrimary, marginTop: Spacing.md },
   emptyText: { color: Colors.textSecondary, marginTop: 6, textAlign: "center", fontSize: 13 },
-});
+  }));
+}
+

@@ -8,6 +8,7 @@ import { api } from "../../src/api";
 import { Card, PrimaryButton } from "../../src/ui";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
 import { useI18n, LOCALES } from "../../src/i18n";
+import { useThemedStyles } from "../../src/themeContext";
 
 type Txn = {
   transaction_id: string;
@@ -24,6 +25,7 @@ function money(n: number) {
 }
 
 export default function Profile() {
+  const styles = useScreenStyles();
   const { user, logout } = useAuth();
   const { locale, t } = useI18n();
   const router = useRouter();
@@ -142,7 +144,8 @@ export default function Profile() {
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   header: { alignItems: "center", padding: Spacing.md },
   avatarWrap: {
@@ -173,4 +176,6 @@ const styles = StyleSheet.create({
   settingText: { flex: 1, fontSize: 15, color: Colors.textPrimary, fontWeight: "600" },
   settingSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
   emptyText: { color: Colors.textSecondary, textAlign: "center", paddingVertical: Spacing.md },
-});
+  }));
+}
+

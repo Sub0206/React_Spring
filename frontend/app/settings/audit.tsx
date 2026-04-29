@@ -7,6 +7,7 @@ import { Card, PrimaryButton } from "../../src/ui";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
 import { api } from "../../src/api";
 import { downloadPdf } from "../../src/pdf";
+import { useThemedStyles } from "../../src/themeContext";
 
 type AuditResp = {
   period: { from: string; to: string; months: number };
@@ -31,6 +32,7 @@ type AuditResp = {
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
 export default function AuditScreen() {
+  const styles = useScreenStyles();
   const router = useRouter();
   const now = new Date();
   const [mode, setMode] = useState<"3m" | "6m" | "12m" | "ytd">("3m");
@@ -152,6 +154,7 @@ export default function AuditScreen() {
 }
 
 function StatTile({ label, value, color }: { label: string; value: string; color?: string }) {
+  const styles = useScreenStyles();
   return (
     <View style={styles.tile}>
       <Text style={styles.tileLbl}>{label}</Text>
@@ -160,7 +163,8 @@ function StatTile({ label, value, color }: { label: string; value: string; color
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   topBar: { flexDirection: "row", alignItems: "center", paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm },
   backBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.surface, alignItems: "center", justifyContent: "center", ...Shadows.card },
@@ -191,4 +195,6 @@ const styles = StyleSheet.create({
     borderRadius: Radii.md, padding: 12, marginTop: Spacing.md,
   },
   pdfHintTxt: { flex: 1, color: Colors.textSecondary, fontSize: 12, lineHeight: 18 },
-});
+  }));
+}
+

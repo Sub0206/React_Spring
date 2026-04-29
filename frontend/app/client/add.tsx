@@ -9,10 +9,12 @@ import { Ionicons } from "@expo/vector-icons";
 import { Input, PrimaryButton } from "../../src/ui";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
 import { api } from "../../src/api";
+import { useThemedStyles } from "../../src/themeContext";
 
 type Step = "basic" | "address" | "aadhaar" | "pan" | "done";
 
 export default function AddClient() {
+  const styles = useScreenStyles();
   const router = useRouter();
   const [step, setStep] = useState<Step>("basic");
 
@@ -303,10 +305,12 @@ export default function AddClient() {
 }
 
 function Label({ text, mt }: { text: string; mt?: boolean }) {
+  const styles = useScreenStyles();
   return <Text style={[styles.label, mt && { marginTop: Spacing.md }]}>{text}</Text>;
 }
 
 function StatusLine({ ok, msg }: { ok: boolean; msg: string }) {
+  const styles = useScreenStyles();
   return (
     <View style={[styles.statusLine, { backgroundColor: (ok ? Colors.success : Colors.danger) + "15" }]}>
       <Ionicons name={ok ? "checkmark-circle" : "alert-circle"} size={14} color={ok ? Colors.success : Colors.danger} />
@@ -316,6 +320,7 @@ function StatusLine({ ok, msg }: { ok: boolean; msg: string }) {
 }
 
 function EmojiHero({ emoji, title, sub, tint = Colors.primary }: { emoji: string; title: string; sub: string; tint?: string }) {
+  const styles = useScreenStyles();
   return (
     <View style={{ alignItems: "center", marginBottom: Spacing.lg }}>
       <View style={[styles.emojiWrap, { backgroundColor: tint + "15" }]}>
@@ -327,7 +332,8 @@ function EmojiHero({ emoji, title, sub, tint = Colors.primary }: { emoji: string
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   heroBar: {
     flexDirection: "row", alignItems: "center", paddingHorizontal: Spacing.md,
@@ -382,4 +388,6 @@ const styles = StyleSheet.create({
   },
   doneTitle: { fontSize: 22, fontWeight: "800", color: Colors.textPrimary, marginTop: Spacing.lg, textAlign: "center" },
   doneSub: { color: Colors.textSecondary, marginTop: 8, textAlign: "center", lineHeight: 22, paddingHorizontal: Spacing.md },
-});
+  }));
+}
+

@@ -7,6 +7,7 @@ import * as ImagePicker from "expo-image-picker";
 import { Card, PrimaryButton, Input } from "../../src/ui";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
 import { api } from "../../src/api";
+import { useThemedStyles } from "../../src/themeContext";
 
 function emiCalc(principal: number, ratePct: number, months: number): number {
   if (months <= 0) return 0;
@@ -17,6 +18,7 @@ function emiCalc(principal: number, ratePct: number, months: number): number {
 }
 
 export default function LoanApprove() {
+  const styles = useScreenStyles();
   const { clientId, analysis, cibil } = useLocalSearchParams<{ clientId: string; analysis?: string; cibil?: string }>();
   const router = useRouter();
 
@@ -246,7 +248,8 @@ export default function LoanApprove() {
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   topBar: { flexDirection: "row", alignItems: "center", paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, backgroundColor: Colors.success },
   backBtn: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center" },
@@ -291,4 +294,6 @@ const styles = StyleSheet.create({
   dueChipTextActive: { color: Colors.primary },
   dueCustomRow: { flexDirection: "row", alignItems: "center", marginTop: 12, gap: 10 },
   dueCustomLabel: { fontSize: 13, color: Colors.textSecondary, flex: 1 },
-});
+  }));
+}
+

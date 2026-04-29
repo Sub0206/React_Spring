@@ -7,6 +7,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "../../src/api";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
+import { useThemedStyles } from "../../src/themeContext";
 
 type App = {
   application_id: string;
@@ -49,6 +50,7 @@ function initialsOf(name?: string) {
 }
 
 export default function Applications() {
+  const styles = useScreenStyles();
   const router = useRouter();
   const [filter, setFilter] = useState("pending");
   const [items, setItems] = useState<App[]>([]);
@@ -200,7 +202,8 @@ export default function Applications() {
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   header: {
     paddingHorizontal: Spacing.lg, paddingTop: Spacing.sm, paddingBottom: Spacing.md,
@@ -261,4 +264,6 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { fontSize: 18, fontWeight: "800", color: Colors.textPrimary, marginTop: Spacing.md },
   emptyText: { color: Colors.textSecondary, marginTop: 6, textAlign: "center", fontSize: 13 },
-});
+  }));
+}
+

@@ -8,8 +8,10 @@ import {
   hasPasscode, clearPasscode, isBiometricAvailable,
   biometricEnabled, setBiometricEnabled, promptBiometric,
 } from "../../src/passcode";
+import { useThemedStyles } from "../../src/themeContext";
 
 export default function SecurityScreen() {
+  const styles = useScreenStyles();
   const router = useRouter();
   const [pcSet, setPcSet] = useState(false);
   const [bioOk, setBioOk] = useState(false);
@@ -141,7 +143,8 @@ export default function SecurityScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   topBar: {
     flexDirection: "row", alignItems: "center", gap: 10,
@@ -180,4 +183,6 @@ const styles = StyleSheet.create({
     padding: Spacing.md,
   },
   infoTxt: { flex: 1, color: Colors.textSecondary, fontSize: 12.5, lineHeight: 19 },
-});
+  }));
+}
+

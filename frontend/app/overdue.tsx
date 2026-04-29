@@ -5,6 +5,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "../src/api";
 import { Colors, Radii, Shadows, Spacing } from "../src/theme";
+import { useThemedStyles } from "../src/themeContext";
 
 type OverdueLoan = {
   loan_id: string; client_id?: string; borrower_name: string;
@@ -13,6 +14,7 @@ type OverdueLoan = {
 };
 
 export default function Overdue() {
+  const styles = useScreenStyles();
   const router = useRouter();
   const [items, setItems] = useState<OverdueLoan[]>([]);
   const [loading, setLoading] = useState(false);
@@ -81,7 +83,8 @@ export default function Overdue() {
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   topBar: { flexDirection: "row", alignItems: "center", paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, backgroundColor: Colors.danger },
   backBtn: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center" },
@@ -104,4 +107,6 @@ const styles = StyleSheet.create({
   entryLine: { color: Colors.textSecondary, fontSize: 11, marginTop: 3 },
   emptyTitle: { fontSize: 20, fontWeight: "800", color: Colors.textPrimary, marginTop: Spacing.md },
   emptyText: { color: Colors.textSecondary, marginTop: 6 },
-});
+  }));
+}
+

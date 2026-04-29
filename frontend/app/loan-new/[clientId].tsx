@@ -11,6 +11,7 @@ import { Input, PrimaryButton, Card, Badge, InitialsAvatar } from "../../src/ui"
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
 import { api } from "../../src/api";
 import { downloadPdf } from "../../src/pdf";
+import { useThemedStyles } from "../../src/themeContext";
 
 type Client = {
   client_id: string; name: string; mobile: string;
@@ -28,6 +29,7 @@ const bandHex = (c?: string) =>
   c === "blue" ? "#2196F3" : c === "green" ? Colors.success : c === "yellow" ? Colors.secondary : c === "red" ? Colors.danger : Colors.textMuted;
 
 export default function NewLoan() {
+  const styles = useScreenStyles();
   const { clientId } = useLocalSearchParams<{ clientId: string }>();
   const router = useRouter();
   const [client, setClient] = useState<Client | null>(null);
@@ -737,6 +739,7 @@ function Legend({ color, label }: { color: string; label: string }) {
 }
 
 function Stat({ label, value, color }: { label: string; value: string; color: string }) {
+  const styles = useScreenStyles();
   return (
     <View style={styles.statBox}>
       <Text style={[styles.statValue, { color }]}>{value}</Text>
@@ -761,6 +764,7 @@ function Kv({ label, value, sub, icon, last }: { label: string; value: string; s
 }
 
 function Label({ text, mt }: { text: string; mt?: boolean }) {
+  const styles = useScreenStyles();
   return <Text style={[styles.label, mt && { marginTop: Spacing.md }]}>{text}</Text>;
 }
 
@@ -773,7 +777,8 @@ const kvStyles = StyleSheet.create({
   sub: { color: Colors.textSecondary, fontSize: 12, marginTop: 1 },
 });
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   topBar: { flexDirection: "row", alignItems: "center", paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, backgroundColor: Colors.primary },
   backBtn: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center" },
@@ -879,7 +884,9 @@ const styles = StyleSheet.create({
   catBar: { flex: 1, height: 8, backgroundColor: Colors.bgAlt, borderRadius: 4, overflow: "hidden" },
   catFill: { height: "100%", borderRadius: 4 },
   catAmount: { fontSize: 12, fontWeight: "800", color: Colors.textPrimary, minWidth: 70, textAlign: "right" },
-});
+  }));
+}
+
 
 function MetricCard({ icon, label, value, color }: { icon: any; label: string; value: string; color: string }) {
   return (

@@ -7,6 +7,7 @@ import { Colors, Radii, Shadows, Spacing } from "../src/theme";
 import { PrimaryButton } from "../src/ui";
 import { useI18n } from "../src/i18n";
 import { useAuth } from "../src/auth";
+import { useThemedStyles } from "../src/themeContext";
 
 type Plan = {
   key: "starter" | "smart" | "prime";
@@ -73,6 +74,7 @@ const PLANS: Plan[] = [
 ];
 
 export default function SubscriptionScreen() {
+  const styles = useScreenStyles();
   const router = useRouter();
   const { t } = useI18n();
   const { user } = useAuth();
@@ -189,7 +191,8 @@ export default function SubscriptionScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   topBar: { flexDirection: "row", alignItems: "center", paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm },
   backBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.surface, alignItems: "center", justifyContent: "center", ...Shadows.card },
@@ -227,4 +230,6 @@ const styles = StyleSheet.create({
   featureDot: { width: 20, height: 20, borderRadius: 10, alignItems: "center", justifyContent: "center" },
   featureText: { color: Colors.textPrimary, fontSize: 13, fontWeight: "600" },
   footer: { textAlign: "center", color: Colors.textMuted, fontSize: 11, marginTop: Spacing.lg, lineHeight: 16 },
-});
+  }));
+}
+

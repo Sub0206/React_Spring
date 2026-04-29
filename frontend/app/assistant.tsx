@@ -8,6 +8,7 @@ import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { api } from "../src/api";
 import { Colors, Radii, Shadows, Spacing } from "../src/theme";
+import { useThemedStyles } from "../src/themeContext";
 
 type Msg = { role: "user" | "bot"; text: string; ts: number };
 
@@ -56,6 +57,7 @@ function TypingDots() {
 }
 
 export default function Assistant() {
+  const styles = useScreenStyles();
   const router = useRouter();
   const [msgs, setMsgs] = useState<Msg[]>([
     { role: "bot", ts: Date.now(), text: "Hi! I'm **LendIQ Business Assistant** ✨ — I can read your live portfolio and answer financial questions. Try one of the quick prompts below or ask me anything." },
@@ -174,7 +176,8 @@ export default function Assistant() {
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   topBar: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm },
   backBtn: {
@@ -231,4 +234,6 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary, alignItems: "center", justifyContent: "center",
     ...Shadows.button,
   },
-});
+  }));
+}
+

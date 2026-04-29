@@ -16,8 +16,10 @@ import { Ionicons } from "@expo/vector-icons";
 import { Input, PrimaryButton } from "../src/ui";
 import { Colors, Radii, Shadows, Spacing, Brand } from "../src/theme";
 import { useAuth } from "../src/auth";
+import { useThemedStyles } from "../src/themeContext";
 
 export default function AuthScreen() {
+  const styles = useScreenStyles();
   const { sendOtp, verifyOtp } = useAuth();
   const router = useRouter();
   const [mode, setMode] = useState<"login" | "signup">("login");
@@ -195,7 +197,8 @@ export default function AuthScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   scroll: { padding: Spacing.lg, paddingBottom: Spacing.xxl },
   hero: { alignItems: "center", marginTop: Spacing.lg, marginBottom: Spacing.lg },
@@ -245,4 +248,6 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.secondary + "44",
   },
   demoText: { color: Colors.textPrimary, fontSize: 13 },
-});
+  }));
+}
+

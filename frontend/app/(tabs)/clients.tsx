@@ -8,6 +8,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "../../src/api";
 import { InitialsAvatar } from "../../src/ui";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
+import { useThemedStyles } from "../../src/themeContext";
 
 type Client = {
   client_id: string;
@@ -25,6 +26,7 @@ type Client = {
 };
 
 export default function Clients() {
+  const styles = useScreenStyles();
   const router = useRouter();
   const [items, setItems] = useState<Client[]>([]);
   const [q, setQ] = useState("");
@@ -164,6 +166,7 @@ export default function Clients() {
 }
 
 function Verified({ label }: { label: string }) {
+  const styles = useScreenStyles();
   return (
     <View style={styles.vBadge}>
       <Ionicons name="checkmark-circle" size={11} color={Colors.success} />
@@ -172,7 +175,8 @@ function Verified({ label }: { label: string }) {
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   header: {
     flexDirection: "row", alignItems: "center", gap: Spacing.md,
@@ -231,4 +235,6 @@ const styles = StyleSheet.create({
     ...Shadows.button,
   },
   emptyBtnText: { color: "#fff", fontWeight: "800", fontSize: 14 },
-});
+  }));
+}
+

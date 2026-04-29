@@ -10,6 +10,7 @@ import { api } from "../../src/api";
 import { Card, PrimaryButton, InitialsAvatar } from "../../src/ui";
 import { useDialog } from "../../src/dialog";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
+import { useThemedStyles } from "../../src/themeContext";
 
 type Entry = { month: number; due_date: string; amount: number; status: string; paid_at?: string | null; was_late?: boolean };
 type Loan = {
@@ -36,6 +37,7 @@ function bucketOf(due: Date, now = new Date()): Bucket {
 type Action = "none" | "pay" | "reschedule" | "undo";
 
 export default function LoanDetail() {
+  const styles = useScreenStyles();
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const dlg = useDialog();
@@ -454,7 +456,8 @@ function Legend({ label, color, icon }: { label: string; color: string; icon: an
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   topBar: { flexDirection: "row", alignItems: "center", paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm },
   backBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.surface, alignItems: "center", justifyContent: "center", ...Shadows.card },
@@ -535,4 +538,6 @@ const styles = StyleSheet.create({
   warnText: { flex: 1, color: Colors.textPrimary, fontSize: 13, lineHeight: 18 },
   okBox: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: Colors.successSoft, borderRadius: Radii.md, padding: Spacing.md, marginTop: Spacing.md },
   okText: { color: Colors.textPrimary, fontSize: 13, fontWeight: "600" },
-});
+  }));
+}
+

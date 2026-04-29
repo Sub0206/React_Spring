@@ -10,8 +10,8 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { StatusBar } from "expo-status-bar";
 import { Colors } from "../src/theme";
 import { ThemeProvider, useTheme } from "../src/themeContext";
-import { hasPasscode, isSessionUnlocked } from "../src/passcode";
-import { View, ActivityIndicator } from "react-native";
+import { hasPasscode, isSessionUnlocked, clearSessionUnlock } from "../src/passcode";
+import { View, ActivityIndicator, AppState, AppStateStatus } from "react-native";
 
 function AuthGate() {
   const { user, loading, googleExchange } = useAuth();
@@ -58,6 +58,26 @@ function AuthGate() {
       }
     })();
   }, [user]);
+
+  // Re-lock the app whenever it returns from background. This forces the user
+  // to re-authenticate via passcode/biometric on resume — required behaviour
+  // for production-grade auth gates.
+  useEffect(() => {
+    let lastState: AppStateStatus = AppState.currentState;
+    const sub = AppState.addEventListener("change", async (next) => {
+      const cameFromBg = (lastState === "background" || lastState === "inactive") && next === "active";
+      lastState = next;
+      if (!cameFromBg) return;
+      try {
+        const has = await hasPasscode();
+        if (has) {
+          clearSessionUnlock();
+          setNeedsPasscode(true);
+        }
+      } catch {/* ignore */}
+    });
+    return () => sub.remove();
+  }, []);
 
   useEffect(() => {
     if (loading || needsPasscode === null) return;
@@ -109,41 +129,15 @@ function AuthGate() {
   );
 }
 
-  return (
-    <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: Colors.bg } }}>
-      <Stack.Screen name="index" />
-      <Stack.Screen name="onboarding" options={{ headerShown: false }} />
-      <Stack.Screen name="(tabs)" />
-      <Stack.Screen name="application/[id]" options={{ presentation: "card" }} />
-      <Stack.Screen name="loan/[id]" options={{ presentation: "card" }} />
-      <Stack.Screen name="client/add" options={{ presentation: "modal" }} />
-      <Stack.Screen name="client/[id]" options={{ presentation: "card" }} />
-      <Stack.Screen name="loan-new/[clientId]" options={{ presentation: "card" }} />
-      <Stack.Screen name="loan-approve/[clientId]" options={{ presentation: "card" }} />
-      <Stack.Screen name="subscribe" options={{ presentation: "card" }} />
-      <Stack.Screen name="settings/language" options={{ presentation: "modal" }} />
-      <Stack.Screen name="settings/audit" options={{ presentation: "card" }} />
-      <Stack.Screen name="settings/help" options={{ presentation: "card" }} />
-      <Stack.Screen name="settings/appearance" options={{ presentation: "card" }} />
-      <Stack.Screen name="settings/security" options={{ presentation: "card" }} />
-      <Stack.Screen name="subscription" options={{ presentation: "card" }} />
-      <Stack.Screen name="overdue" options={{ presentation: "card" }} />
-      <Stack.Screen name="notifications" options={{ presentation: "card" }} />
-      <Stack.Screen name="passcode" options={{ presentation: "card", gestureEnabled: false }} />
-      <Stack.Screen name="assistant" options={{ presentation: "card" }} />
-    </Stack>
-  );
-}
-
 function ThemedApp() {
-  const { ready, remountKey, resolved } = useTheme();
+  const { ready, resolved } = useTheme();
   if (!ready) {
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: Colors.bg }} />
     );
   }
   return (
-    <View style={{ flex: 1, backgroundColor: Colors.bg }} key={remountKey}>
+    <View style={{ flex: 1, backgroundColor: Colors.bg }}>
       <StatusBar style={resolved === "dark" ? "light" : "dark"} />
       <AuthGate />
     </View>

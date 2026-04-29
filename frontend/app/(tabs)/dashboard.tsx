@@ -9,6 +9,8 @@ import { api } from "../../src/api";
 import { useAuth } from "../../src/auth";
 import { Card } from "../../src/ui";
 import { Colors, Radii, Shadows, Spacing, Brand } from "../../src/theme";
+import { useThemedStyles } from "../../src/themeContext";
+import { NotificationBell } from "../../src/notificationBell";
 
 type Stats = {
   total_funded: number;
@@ -40,6 +42,7 @@ function money(n: number) {
 }
 
 export default function Dashboard() {
+  const styles = useScreenStyles();
   const { user } = useAuth();
   const router = useRouter();
   const [stats, setStats] = useState<Stats | null>(null);
@@ -83,9 +86,7 @@ export default function Dashboard() {
             <Text style={styles.brandRow}>{Brand.name}</Text>
             <Text style={styles.poweredBy}>{Brand.tagline}</Text>
           </View>
-          <TouchableOpacity testID="btn-notifications" onPress={() => router.push("/notifications")} style={styles.bell}>
-            <Ionicons name="notifications" size={22} color={Colors.textPrimary} />
-          </TouchableOpacity>
+          <NotificationBell />
         </View>
 
         <Text style={styles.hello}>Hi, {user?.name?.split(" ")[0] || "Lender"} 👋</Text>
@@ -227,6 +228,7 @@ export default function Dashboard() {
 }
 
 function StatBox({ icon, color, label, value, testID }: any) {
+  const styles = useScreenStyles();
   return (
     <View testID={testID} style={styles.statBox}>
       <View style={[styles.statIcon, { backgroundColor: color + "1A" }]}>
@@ -239,6 +241,7 @@ function StatBox({ icon, color, label, value, testID }: any) {
 }
 
 function HealthTile({ label, count, color, icon, onPress }: { label: string; count: number; color: string; icon: any; onPress?: () => void }) {
+  const styles = useScreenStyles();
   return (
     <TouchableOpacity
       testID={`health-${label.replace(/\s+/g, "-").toLowerCase()}`}
@@ -255,7 +258,8 @@ function HealthTile({ label, count, color, icon, onPress }: { label: string; cou
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   scroll: { padding: Spacing.lg, paddingBottom: Spacing.xxl },
   header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: Spacing.sm },
@@ -313,4 +317,6 @@ const styles = StyleSheet.create({
   },
   healthCount: { fontSize: 22, fontWeight: "800", letterSpacing: -0.5 },
   healthLabel: { fontSize: 10, color: Colors.textSecondary, fontWeight: "700", marginTop: 2, letterSpacing: 0.3, textAlign: "center" },
-});
+  }));
+}
+

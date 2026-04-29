@@ -4,7 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
-import { useTheme } from "../../src/themeContext";
+import { useTheme, useThemedStyles } from "../../src/themeContext";
 
 type Option = { key: "system" | "light" | "dark"; label: string; desc: string; icon: any };
 
@@ -15,6 +15,7 @@ const OPTIONS: Option[] = [
 ];
 
 export default function AppearanceScreen() {
+  const styles = useScreenStyles();
   const router = useRouter();
   const { mode, setMode, resolved } = useTheme();
 
@@ -94,7 +95,8 @@ export default function AppearanceScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   topBar: {
     flexDirection: "row", alignItems: "center", gap: 10,
@@ -153,4 +155,6 @@ const styles = StyleSheet.create({
   },
   previewTileNum: { fontSize: 22, fontWeight: "900" },
   previewTileLbl: { fontSize: 11, fontWeight: "700", color: Colors.textSecondary, marginTop: 2 },
-});
+  }));
+}
+

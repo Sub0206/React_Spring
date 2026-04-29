@@ -6,6 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { api } from "../../src/api";
 import { Card, PrimaryButton, Badge, InitialsAvatar } from "../../src/ui";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
+import { useThemedStyles } from "../../src/themeContext";
 
 type Client = {
   client_id: string; name: string; mobile: string;
@@ -29,6 +30,7 @@ type ClientLoan = {
 };
 
 export default function ClientDetail() {
+  const styles = useScreenStyles();
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [client, setClient] = useState<Client | null>(null);
@@ -201,6 +203,7 @@ export default function ClientDetail() {
 }
 
 function VBadge({ label }: { label: string }) {
+  const styles = useScreenStyles();
   return (
     <View style={styles.vb}>
       <Ionicons name="checkmark-circle" size={12} color="#fff" />
@@ -234,7 +237,8 @@ const rowStyles = StyleSheet.create({
   sub: { color: Colors.textSecondary, fontSize: 12, marginTop: 1 },
 });
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   topBar: { flexDirection: "row", alignItems: "center", paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, backgroundColor: Colors.primary },
   backBtn: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center" },
@@ -269,4 +273,6 @@ const styles = StyleSheet.create({
   scoreBadge: { alignItems: "center", paddingHorizontal: 10, paddingVertical: 4, borderRadius: Radii.md, backgroundColor: Colors.primary + "15" },
   scoreBadgeText: { fontSize: 14, fontWeight: "800", color: Colors.primary },
   scoreBadgeLabel: { fontSize: 9, color: Colors.primary, fontWeight: "700" },
-});
+  }));
+}
+

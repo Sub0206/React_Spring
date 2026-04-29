@@ -5,8 +5,10 @@ import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useI18n, LOCALES, t } from "../../src/i18n";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
+import { useThemedStyles } from "../../src/themeContext";
 
 export default function LanguageScreen() {
+  const styles = useScreenStyles();
   const router = useRouter();
   const { locale, setLocale } = useI18n();
 
@@ -54,7 +56,8 @@ export default function LanguageScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   topBar: { flexDirection: "row", alignItems: "center", paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm },
   backBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.surface, alignItems: "center", justifyContent: "center", ...Shadows.card },
@@ -69,4 +72,6 @@ const styles = StyleSheet.create({
   native: { fontSize: 18, fontWeight: "800", color: Colors.textPrimary },
   english: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
   check: { width: 28, height: 28, borderRadius: 14, backgroundColor: Colors.primary, alignItems: "center", justifyContent: "center" },
-});
+  }));
+}
+

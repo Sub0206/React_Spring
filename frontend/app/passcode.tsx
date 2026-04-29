@@ -11,10 +11,12 @@ import {
 } from "../src/passcode";
 import { useAuth } from "../src/auth";
 import { markSessionUnlocked } from "../src/passcode";
+import { useThemedStyles } from "../src/themeContext";
 
 type Mode = "verify" | "create" | "confirm";
 
 export default function PasscodeScreen() {
+  const styles = useScreenStyles();
   const router = useRouter();
   const params = useLocalSearchParams<{ mode?: string; redirect?: string }>();
   const { logout } = useAuth();
@@ -243,7 +245,8 @@ export default function PasscodeScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   top: { flexDirection: "row", justifyContent: "flex-end", paddingHorizontal: Spacing.md, paddingTop: Spacing.sm },
   logoutBtn: {
@@ -278,4 +281,6 @@ const styles = StyleSheet.create({
   bioTxt: { marginTop: 8, color: Colors.primary, fontWeight: "800", fontSize: 14 },
 
   footer: { padding: Spacing.lg, paddingBottom: Spacing.xl },
-});
+  }));
+}
+

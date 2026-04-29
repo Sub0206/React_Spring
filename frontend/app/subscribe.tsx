@@ -7,6 +7,7 @@ import { PrimaryButton, Input } from "../src/ui";
 import { Colors, Radii, Shadows, Spacing } from "../src/theme";
 import { api } from "../src/api";
 import { useAuth } from "../src/auth";
+import { useThemedStyles } from "../src/themeContext";
 
 type Plan = { id: string; name: string; price: number; features: string[]; popular?: boolean };
 
@@ -25,6 +26,7 @@ const planIcons: Record<string, any> = {
 type PayMethod = "upi" | "card" | "phonepe" | "gpay";
 
 export default function Subscribe() {
+  const styles = useScreenStyles();
   const router = useRouter();
   const { refresh } = useAuth();
   const [plans, setPlans] = useState<Plan[]>([]);
@@ -214,10 +216,12 @@ export default function Subscribe() {
 }
 
 function Label({ text, mt }: { text: string; mt?: boolean }) {
+  const styles = useScreenStyles();
   return <Text style={[styles.label, mt && { marginTop: Spacing.md }]}>{text}</Text>;
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   emojiCircle: { width: 80, height: 80, borderRadius: 40, backgroundColor: Colors.primary + "15", alignItems: "center", justifyContent: "center" },
   title: { fontSize: 28, fontWeight: "800", color: Colors.textPrimary, marginTop: Spacing.md },
@@ -251,4 +255,6 @@ const styles = StyleSheet.create({
   label: { fontSize: 12, fontWeight: "700", color: Colors.textSecondary, letterSpacing: 0.5, marginBottom: 6 },
   secureRow: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, marginTop: 12 },
   secureText: { color: Colors.textMuted, fontSize: 11 },
-});
+  }));
+}
+

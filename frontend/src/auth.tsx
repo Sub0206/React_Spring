@@ -81,6 +81,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = async () => {
+    clearSessionUnlock();
     await clearToken();
     setUser(null);
   };

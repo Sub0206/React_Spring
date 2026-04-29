@@ -121,12 +121,19 @@ export function isSessionUnlocked(): boolean { return _sessionUnlocked; }
 export function markSessionUnlocked(): void { _sessionUnlocked = true; }
 export function clearSessionUnlock(): void { _sessionUnlocked = false; }
 
+// ---- Biometric prompt ----
+export async function promptBiometric(
+  reason: string = "Unlock LendIQ"
+): Promise<boolean> {
   if (Platform.OS === "web") return false;
   try {
     const r = await LocalAuthentication.authenticateAsync({
-      promptMessage: reason, cancelLabel: "Use passcode",
+      promptMessage: reason,
+      cancelLabel: "Use passcode",
       disableDeviceFallback: false,
     });
     return !!r.success;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }

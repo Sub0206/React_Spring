@@ -10,8 +10,51 @@ import {
   ViewStyle,
 } from "react-native";
 import { Colors, Radii, Shadows, Spacing } from "./theme";
+import { useThemedStyles } from "./themeContext";
+
+// Shared theme-reactive stylesheet used across all primitives in this file.
+function useUIStyles() {
+  return useThemedStyles(() =>
+    StyleSheet.create({
+      card: {
+        backgroundColor: Colors.surface,
+        borderRadius: Radii.xl,
+        padding: Spacing.lg,
+        borderWidth: 1,
+        borderColor: Colors.borderLight,
+        ...Shadows.card,
+      },
+      btn: {
+        height: 54,
+        borderRadius: Radii.pill,
+        alignItems: "center",
+        justifyContent: "center",
+        paddingHorizontal: Spacing.lg,
+      },
+      btnText: { fontSize: 16, fontWeight: "700" },
+      input: {
+        height: 54,
+        borderRadius: Radii.md,
+        borderWidth: 2,
+        borderColor: Colors.border,
+        paddingHorizontal: Spacing.md,
+        backgroundColor: Colors.surface,
+        fontSize: 16,
+        color: Colors.textPrimary,
+      },
+      badge: {
+        paddingHorizontal: 12,
+        paddingVertical: 5,
+        borderRadius: Radii.pill,
+        borderWidth: 1,
+        alignSelf: "flex-start",
+      },
+    })
+  );
+}
 
 export function Card({ children, style, testID }: { children: React.ReactNode; style?: ViewStyle; testID?: string }) {
+  const styles = useUIStyles();
   return (
     <View testID={testID} style={[styles.card, style]}>
       {children}
@@ -36,6 +79,7 @@ export function PrimaryButton({
   icon?: React.ReactNode;
   variant?: "primary" | "secondary" | "success" | "danger" | "ghost";
 }) {
+  const styles = useUIStyles();
   const bg =
     variant === "primary"
       ? Colors.primary
@@ -75,6 +119,7 @@ export function PrimaryButton({
 }
 
 export function Input(props: TextInputProps & { testID?: string }) {
+  const styles = useUIStyles();
   return (
     <TextInput
       placeholderTextColor={Colors.textMuted}
@@ -95,6 +140,7 @@ export function Badge({
   bg?: string;
   testID?: string;
 }) {
+  const styles = useUIStyles();
   return (
     <View
       testID={testID}
@@ -152,39 +198,3 @@ export function InitialsAvatar({
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  card: {
-    backgroundColor: Colors.surface,
-    borderRadius: Radii.xl,
-    padding: Spacing.lg,
-    borderWidth: 1,
-    borderColor: Colors.borderLight,
-    ...Shadows.card,
-  },
-  btn: {
-    height: 54,
-    borderRadius: Radii.pill,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: Spacing.lg,
-  },
-  btnText: { fontSize: 16, fontWeight: "700" },
-  input: {
-    height: 54,
-    borderRadius: Radii.md,
-    borderWidth: 2,
-    borderColor: Colors.border,
-    paddingHorizontal: Spacing.md,
-    backgroundColor: Colors.surface,
-    fontSize: 16,
-    color: Colors.textPrimary,
-  },
-  badge: {
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: Radii.pill,
-    borderWidth: 1,
-    alignSelf: "flex-start",
-  },
-});

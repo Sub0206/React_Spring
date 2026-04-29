@@ -9,6 +9,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Swipeable } from "react-native-gesture-handler";
 import { api } from "../src/api";
 import { Colors, Radii, Shadows, Spacing } from "../src/theme";
+import { useThemedStyles } from "../src/themeContext";
 
 type Notif = {
   notification_id: string;
@@ -44,6 +45,7 @@ function relTime(iso: string) {
 }
 
 export default function Notifications() {
+  const styles = useScreenStyles();
   const router = useRouter();
   const [items, setItems] = useState<Notif[]>([]);
   const [loading, setLoading] = useState(false);
@@ -250,7 +252,8 @@ export default function Notifications() {
   );
 }
 
-const styles = StyleSheet.create({
+function useScreenStyles() {
+  return useThemedStyles(() => StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.bg },
   topBar: {
     flexDirection: "row", alignItems: "center", gap: 10,
@@ -320,4 +323,6 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { fontSize: 18, fontWeight: "800", color: Colors.textPrimary, marginTop: 4 },
   emptyText: { color: Colors.textSecondary, marginTop: 6, textAlign: "center", fontSize: 13, lineHeight: 19, maxWidth: 300 },
-});
+  }));
+}
+
