@@ -10,15 +10,14 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { StatusBar } from "expo-status-bar";
 import { Colors } from "../src/theme";
 import { ThemeProvider, useTheme } from "../src/themeContext";
-import { isSessionUnlocked, clearSessionUnlock, checkHasPasscode } from "../src/passcode";
-import { View, ActivityIndicator, AppState, AppStateStatus } from "react-native";
+import { checkHasPasscode } from "../src/passcode";
+import { View, ActivityIndicator } from "react-native";
 
 function AuthGate() {
-  const { user, loading, googleExchange } = useAuth();
+  const { user, loading, sessionUnlocked, googleExchange } = useAuth();
   const segments = useSegments();
   const router = useRouter();
-  const [needsPasscode, setNeedsPasscode] = useState<boolean | null>(null);
-  const [mustCreatePasscode, setMustCreatePasscode] = useState<boolean>(false);
+  const [hasServerPasscode, setHasServerPasscode] = useState<boolean | null>(null);
 
   // Handle Emergent Google auth return with #session_id= in URL hash (web preview)
   useEffect(() => {
@@ -48,49 +47,30 @@ function AuthGate() {
   }, []);
 
   // Re-check passcode requirement whenever the user changes.
-  // The server is the source of truth — we ask /auth/has-passcode for the
-  // current user's mobile.
+  // Source of truth = server (`/auth/has-passcode`). The AppState-driven
+  // re-lock (and the actual sessionUnlocked flag) live in AuthProvider so
+  // they're proper React state and trigger re-renders here.
   useEffect(() => {
     (async () => {
       if (!user) {
-        setNeedsPasscode(false);
-        setMustCreatePasscode(false);
+        setHasServerPasscode(false);
         return;
       }
       try {
         const has = await checkHasPasscode(user.mobile);
-        setMustCreatePasscode(!has);
-        setNeedsPasscode(has && !isSessionUnlocked());
+        setHasServerPasscode(has);
       } catch {
-        setNeedsPasscode(false);
-        setMustCreatePasscode(false);
+        setHasServerPasscode(null);
       }
     })();
   }, [user]);
 
-  // Re-lock the app whenever it returns from background. This forces the user
-  // to re-authenticate via passcode on resume — required behaviour for
-  // production-grade auth gates. Biometric was removed per the auth-flow
-  // refactor; passcode is the only auth method.
-  useEffect(() => {
-    let lastState: AppStateStatus = AppState.currentState;
-    const sub = AppState.addEventListener("change", async (next) => {
-      const cameFromBg = (lastState === "background" || lastState === "inactive") && next === "active";
-      lastState = next;
-      if (!cameFromBg || !user) return;
-      try {
-        const has = await checkHasPasscode(user.mobile);
-        if (has) {
-          clearSessionUnlock();
-          setNeedsPasscode(true);
-        }
-      } catch {/* ignore */}
-    });
-    return () => sub.remove();
-  }, [user]);
+  // Derived routing decisions — pure, no side effects, no race conditions.
+  const needsPasscode = !!user && hasServerPasscode === true && !sessionUnlocked;
+  const mustCreatePasscode = !!user && hasServerPasscode === false;
 
   useEffect(() => {
-    if (loading || needsPasscode === null) return;
+    if (loading || hasServerPasscode === null) return;
     const cur = segments[0] || "";
     const inAuth = cur === "" || cur === "index";
     const onOnboarding = cur === "onboarding";
@@ -105,14 +85,19 @@ function AuthGate() {
       router.replace({ pathname: "/passcode", params: { mode: "verify" } } as any);
     } else if (user && mustCreatePasscode && !onPasscode) {
       // First-time / no-passcode-yet user — force them to set one before
-      // anything else. Honors any ?redirect target the caller already set.
+      // anything else.
       router.replace({ pathname: "/passcode", params: { mode: "create" } } as any);
-    } else if (user && !needsPasscode && !mustCreatePasscode && (inAuth || onOnboarding)) {
+    } else if (user && !needsPasscode && !mustCreatePasscode && (inAuth || onOnboarding || onPasscode)) {
+      // Authenticated + unlocked + has-passcode → leave the auth surface and
+      // land on the dashboard. This includes the case where the user has just
+      // typed their passcode on /passcode?mode=login or just confirmed a new
+      // passcode on /passcode?mode=create — without this branch they'd stay
+      // stuck on the passcode screen.
       router.replace("/(tabs)/dashboard");
     }
-  }, [user, loading, segments, needsPasscode, mustCreatePasscode]);
+  }, [user, loading, segments, needsPasscode, mustCreatePasscode, hasServerPasscode]);
 
-  if (loading || needsPasscode === null) {
+  if (loading || (user && hasServerPasscode === null)) {
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: Colors.bg }}>
         <ActivityIndicator size="large" color={Colors.primary} />

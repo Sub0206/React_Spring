@@ -1,23 +1,19 @@
 /**
- * Passcode session-state utilities (server-driven).
+ * Passcode helpers (server-driven).
  *
- * The 4-digit passcode is now stored ONLY on the backend (`passcode_hash` on the
- * user document). This module no longer hashes/stores the passcode locally — it
- * just exposes thin helpers around the auth API endpoints + an in-memory session
- * lock flag used by the AppState resume guard.
+ * The 4-digit passcode is stored ONLY on the backend (`passcode_hash` on the
+ * user document). This module exposes thin helpers around the auth API
+ * endpoints. The actual unlock state used by the AuthGate is React state
+ * inside `auth.tsx` (`sessionUnlocked`) — NOT module state — so passcode
+ * verification cleanly triggers re-renders.
  *
  * Removed in this iteration:
  *   - Local SecureStore passcode hash
  *   - Biometric (Touch ID / Face ID) — passcode is the only auth method
  *   - `expo-local-authentication` usage
+ *   - Module-scoped `_sessionUnlocked` flag (replaced by React state)
  */
 import { api } from "./api";
-
-// ----- in-memory session unlock flag -----
-let _sessionUnlocked = false;
-export function isSessionUnlocked(): boolean { return _sessionUnlocked; }
-export function markSessionUnlocked(): void { _sessionUnlocked = true; }
-export function clearSessionUnlock(): void { _sessionUnlocked = false; }
 
 // ----- API wrappers -----
 

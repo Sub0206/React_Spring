@@ -1554,3 +1554,36 @@ agent_communication:
 - Document analysis (upload PDF on loan-new) → analysis screen with charts, risk score, eligibility ✅
 - All backend access logs show 200s for has-passcode / passcode-login / verify-otp / analyze-statement.
 
+
+## Updated 2026-04-29 (Agent main): Passcode loop fix — module flag → React state + AppState debounce
+
+### User-reported symptoms (native build)
+- "After login, the passcode screen keeps asking — I can't get past it."
+- "While doing document analysis, after picking the file from mobile it asks for passcode again. Keeps asking, never moves to the next page."
+
+Backend logs proved the loop: `POST /auth/verify-passcode 200` repeated 4x in a row.
+
+### Root causes
+1. **Module-scoped `_sessionUnlocked` flag wasn't React state.**  
+   `passcode.ts` exposed `markSessionUnlocked()` / `isSessionUnlocked()` as a module variable. Mutating it didn't trigger AuthGate re-renders, so after a successful passcode verify, AuthGate's `needsPasscode` state stayed `true` and the redirect effect kept pushing the user back to `/passcode?mode=verify`.
+
+2. **AppState handler treated brief `inactive` transitions as "background".**  
+   On native, opening a system sheet (document picker, share sheet, permission dialog, even keyboard on some devices) flips AppState through `inactive`. The handler treated that as a "came from background" event and forced a re-lock, immediately popping the user back to passcode entry every time they tapped *Tap to upload*.
+
+### Fix
+- **`src/auth.tsx`**: `sessionUnlocked` is now React state inside `AuthProvider`, exposed via `useAuth()` together with `setSessionUnlocked`. `verifyOtp` / `passcodeLogin` / `resetPasscode` / `googleExchange` all flip it to `true` themselves; `logout` flips it to `false`.
+- **AppState debounce (in `AuthProvider`)**: track `lastBgAt` only on `'background'` (not `'inactive'`); only re-lock when **`Date.now() - lastBgAt >= 30 000ms`**. File pickers / share sheets / keyboard never come close to that threshold.
+- **`app/_layout.tsx` `AuthGate`**: derives `needsPasscode` and `mustCreatePasscode` from `sessionUnlocked + hasServerPasscode` instead of local mutable state. Removed the duplicate AppState listener (single source of truth in AuthProvider). Added the missing `onPasscode` branch in the redirect effect so a successful passcode-login or passcode-create properly lands the user on `/dashboard` instead of stranding them on `/passcode`.
+- **`app/passcode.tsx`**: drops module-flag calls (`markSessionUnlocked` etc.) in favour of `setSessionUnlocked(true)` from auth context.
+- **`src/passcode.ts`**: deleted the dead `_sessionUnlocked` flag exports.
+
+### Verified (web preview, full flow)
+- `9876543210` / passcode `5678` → mobile → Continue → `/passcode?mode=login` → enter `5678` → `/dashboard` ✅
+- Clients → Rahul Desai → Continue → upload PDF → "Analyze statement" — **no passcode loop**, analysis screen renders with Bounce Risk LOW, Eligibility STRONG, Avg Income ₹109k, full monthly activity chart ✅
+- AuthGate console trace ends with `cur: (tabs), user: true, hasServerPasscode: true, sessionUnlocked: true, needsPasscode: false` — clean.
+
+### MOCKED / Deferred (unchanged)
+- Razorpay payments still **MOCKED**.
+- `server.py` modular refactor still deferred to next iteration.
+- Push notifications: future.
+

@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
+import { AppState, type AppStateStatus } from "react-native";
 import { api, saveToken, clearToken, getToken } from "./api";
-import { clearSessionUnlock, markSessionUnlocked } from "./passcode";
+import { checkHasPasscode } from "./passcode";
 
 export type User = {
   user_id: string;
@@ -13,16 +14,23 @@ export type User = {
   subscription_status?: string | null;
 };
 
+/** Re-lock the app after this many ms of being in actual background.
+ * Brief 'inactive' transitions (file picker, share sheet, permission dialog,
+ * keyboard) MUST NOT trip the re-lock — that's what caused "passcode keeps
+ * asking" on the first native build. */
+const RELOCK_AFTER_BG_MS = 30_000;
+
 type AuthCtx = {
   user: User | null;
   loading: boolean;
-  /** OTP request. `purpose='login'|'signup'|'reset'`. */
+  /** True when the current session has been unlocked by passcode (or just-issued
+   * OTP/passcode-login). When false AND the user has a server-side passcode,
+   * AuthGate forces the passcode screen. */
+  sessionUnlocked: boolean;
+  setSessionUnlocked: (v: boolean) => void;
   sendOtp: (mobile: string, purpose: "signup" | "login" | "reset", name?: string) => Promise<{ demo_otp?: string }>;
-  /** OTP verify. Returns `{ user, hasPasscode }` so callers can branch into "set passcode" UX. */
   verifyOtp: (mobile: string, otp: string) => Promise<{ user: User; hasPasscode: boolean }>;
-  /** Returning-user login via mobile + 4-digit passcode (no OTP). */
   passcodeLogin: (mobile: string, passcode: string) => Promise<User>;
-  /** Forgot-passcode reset: mobile + reset OTP + new passcode → token issued. */
   resetPasscode: (mobile: string, otp: string, passcode: string) => Promise<User>;
   googleExchange: (sessionId: string) => Promise<void>;
   logout: () => Promise<void>;
@@ -34,6 +42,7 @@ const Ctx = createContext<AuthCtx | null>(null);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [sessionUnlocked, setSessionUnlocked] = useState<boolean>(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -57,6 +66,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     })();
   }, [refresh]);
 
+  // ---- AppState-driven re-lock ----
+  // Only re-lock when the app was REALLY backgrounded for >= RELOCK_AFTER_BG_MS.
+  // This avoids the document-picker / share-sheet false positives that made the
+  // passcode screen "keep asking" on native.
+  useEffect(() => {
+    let lastBgAt: number | null = null;
+    let lastState: AppStateStatus = AppState.currentState;
+    const sub = AppState.addEventListener("change", async (next) => {
+      // Track when we went down. Use 'background' specifically — 'inactive'
+      // is too noisy on iOS (file pickers, control center swipes).
+      if (next === "background") {
+        lastBgAt = Date.now();
+      } else if (next === "active" && lastState !== "active") {
+        const downAt = lastBgAt;
+        lastBgAt = null;
+        if (!user || !downAt) return;
+        const elapsed = Date.now() - downAt;
+        if (elapsed < RELOCK_AFTER_BG_MS) return;
+        try {
+          const has = await checkHasPasscode(user.mobile);
+          if (has) setSessionUnlocked(false);
+        } catch {/* ignore network failures */}
+      }
+      lastState = next;
+    });
+    return () => sub.remove();
+  }, [user]);
+
   const sendOtp = async (mobile: string, purpose: "signup" | "login" | "reset", name?: string) => {
     return await api<{ demo_otp?: string }>("/auth/send-otp", {
       method: "POST",
@@ -72,8 +109,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     );
     await saveToken(res.access_token);
     setUser(res.user);
-    // Just verified via OTP — session is implicitly unlocked.
-    markSessionUnlocked();
+    setSessionUnlocked(true);
     return { user: res.user, hasPasscode: !!res.has_passcode };
   };
 
@@ -85,7 +121,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
     await saveToken(res.access_token);
     setUser(res.user);
-    markSessionUnlocked();
+    setSessionUnlocked(true);
     return res.user;
   };
 
@@ -97,7 +133,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
     await saveToken(res.access_token);
     setUser(res.user);
-    markSessionUnlocked();
+    setSessionUnlocked(true);
     return res.user;
   };
 
@@ -109,10 +145,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
     await saveToken(res.access_token);
     setUser(res.user);
+    setSessionUnlocked(true);
   };
 
   const logout = async () => {
-    clearSessionUnlock();
+    setSessionUnlocked(false);
     await clearToken();
     setUser(null);
   };
@@ -122,6 +159,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       value={{
         user,
         loading,
+        sessionUnlocked,
+        setSessionUnlocked,
         sendOtp,
         verifyOtp,
         passcodeLogin,

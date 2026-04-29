@@ -17,7 +17,6 @@ import { PrimaryButton } from "../src/ui";
 import {
   setServerPasscode,
   verifyServerPasscode,
-  markSessionUnlocked,
 } from "../src/passcode";
 import { useAuth } from "../src/auth";
 import { useThemedStyles } from "../src/themeContext";
@@ -54,7 +53,7 @@ export default function PasscodeScreen() {
     otp?: string;
     redirect?: string;
   }>();
-  const { logout, passcodeLogin, resetPasscode, refresh } = useAuth();
+  const { logout, passcodeLogin, resetPasscode, refresh, setSessionUnlocked } = useAuth();
   const initialMode: Mode = (params.mode as Mode) || "verify";
   const mobile = (params.mobile as string) || "";
   const resetOtp = (params.otp as string) || "";
@@ -116,7 +115,7 @@ export default function PasscodeScreen() {
       try {
         await setServerPasscode(code);
         setStatus({ kind: "ok", msg: "Passcode set ✓" });
-        markSessionUnlocked();
+        setSessionUnlocked(true);
         // Refresh user — forces AuthGate to re-evaluate has-passcode and clear
         // its mustCreatePasscode flag so the upcoming router.replace sticks.
         await refresh();
@@ -188,7 +187,7 @@ export default function PasscodeScreen() {
     const ok = await verifyServerPasscode(code);
     setBusy(false);
     if (ok) {
-      markSessionUnlocked();
+      setSessionUnlocked(true);
       router.replace((params.redirect as any) || "/(tabs)/dashboard");
     } else {
       setStatus({ kind: "err", msg: "Wrong passcode." });
