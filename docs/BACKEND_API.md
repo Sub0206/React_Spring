@@ -160,12 +160,15 @@ Live stats for the authenticated lender.
 {
   "total_funded": 1390000.0,
   "active_loans": 18,
-  "overdue_emis": 20,
+  "overdue_count": 20,
   "overdue_amount": 204000.0,
-  "monthly_volume": 106000.0,
+  "current_month_disbursed": 106000.0,
+  "current_month_repaid": 42000.0,
+  "inflow_chart": [ { "label": "Feb 2026", "amount": 84000 }, { "label": "Mar 2026", "amount": 91500 } ],
+  "outflow_chart": [ { "label": "Feb 2026", "amount": 120000 }, { "label": "Mar 2026", "amount": 95000 } ],
   "portfolio_health": {
     "on_track": 4,
-    "overdue": 2,
+    "overdue": 8,
     "at_risk": 6,
     "completed": 4,
     "defaulted": 1
