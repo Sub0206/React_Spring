@@ -137,6 +137,11 @@ class ClientModel(BaseModel):
     reject_at: Optional[datetime] = None
     avatar: Optional[str] = None
     created_at: datetime
+    # Risk snapshot derived from the borrower's active loans. Populated only on
+    # list/detail endpoints that enrich it; absent on write endpoints.
+    risk_kind: Optional[Literal["on_track", "overdue_mild", "overdue_high"]] = None
+    risk_overdue_count: Optional[int] = None
+    risk_overdue_amount: Optional[float] = None
 
 class VerifyAadhaarRequest(BaseModel):
     aadhaar: str
@@ -941,7 +946,47 @@ async def client_list(q: Optional[str] = None, current: UserPublic = Depends(get
         }
     cursor = db.clients.find(query, {"_id": 0, "aadhaar_last4": 0}).sort("created_at", -1)
     docs = await cursor.to_list(500)
-    return [ClientModel(**d) for d in docs]
+    # Enrich with risk snapshot so the client-list screen can show colour badges
+    # without an N+1 call. Single aggregate pull over the lender's loans.
+    client_ids = [d["client_id"] for d in docs]
+    mobiles = [d.get("mobile") for d in docs if d.get("mobile")]
+    mobile_to_cid = {d["mobile"]: d["client_id"] for d in docs if d.get("mobile")}
+    risk_by_cid: dict[str, dict] = {cid: {"kind": "on_track", "count": 0, "amount": 0.0} for cid in client_ids}
+    if client_ids:
+        loan_cursor = db.loans.find(
+            {
+                "lender_id": current.user_id,
+                "status": {"$in": ["active", "disbursed"]},
+                "$or": [
+                    {"client_id": {"$in": client_ids}},
+                    {"borrower.mobile": {"$in": mobiles}},
+                ],
+            },
+            {"_id": 0},
+        )
+        async for l in loan_cursor:
+            cid = l.get("client_id")
+            if not cid:
+                bmob = (l.get("borrower") or {}).get("mobile")
+                cid = mobile_to_cid.get(bmob)
+            if not cid or cid not in risk_by_cid:
+                continue
+            c = _classify_loan_risk(l)
+            slot = risk_by_cid[cid]
+            rank_new = {"on_track": 0, "overdue_mild": 1, "overdue_high": 2, "completed": 0, "defaulted": 0}[c["kind"]]
+            rank_cur = {"on_track": 0, "overdue_mild": 1, "overdue_high": 2}.get(slot["kind"], 0)
+            if rank_new > rank_cur:
+                slot["kind"] = c["kind"]
+            slot["count"] += c["overdue_count"]
+            slot["amount"] += c["overdue_amount"]
+    out: List[ClientModel] = []
+    for d in docs:
+        r = risk_by_cid.get(d["client_id"], {"kind": "on_track", "count": 0, "amount": 0.0})
+        d["risk_kind"] = r["kind"] if r["kind"] in ("on_track", "overdue_mild", "overdue_high") else "on_track"
+        d["risk_overdue_count"] = r["count"]
+        d["risk_overdue_amount"] = round(r["amount"], 2)
+        out.append(ClientModel(**d))
+    return out
 
 @api.get("/clients/{client_id}", response_model=ClientModel)
 async def client_get(client_id: str, current: UserPublic = Depends(get_current_user)):
@@ -969,6 +1014,143 @@ async def client_loans(client_id: str, current: UserPublic = Depends(get_current
     cursor = db.applications.find({"client_id": client_id, "lender_id": current.user_id}, {"_id": 0}).sort("created_at", -1)
     docs = await cursor.to_list(100)
     return [LoanApplication(**d) for d in docs]
+
+
+# ---------- Risk classification (single source of truth) ----------
+# Business rules (MUST match the mobile + web `classifyLoan` helpers):
+#   on_track     \u2014 no unpaid past-due EMI
+#   overdue_mild \u2014 exactly 1 unpaid past-due EMI AND its due_date is in the
+#                  CURRENT calendar month
+#   overdue_high \u2014 >1 unpaid past-due EMI OR any unpaid past-due EMI from a
+#                  PRIOR month (multi-month delinquency)
+#   completed / defaulted \u2014 terminal states from loan.status
+
+def _classify_loan_risk(loan: dict, now: Optional[datetime] = None) -> dict:
+    now = now or datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if loan.get("status") == "completed":
+        return {"kind": "completed", "overdue_count": 0, "overdue_amount": 0.0,
+                "has_prior_month": False, "late_paid_count": 0, "missed_months": []}
+    if loan.get("status") == "defaulted":
+        return {"kind": "defaulted", "overdue_count": 0, "overdue_amount": 0.0,
+                "has_prior_month": False, "late_paid_count": 0, "missed_months": []}
+    overdue_count = 0
+    overdue_amount = 0.0
+    has_prior_month = False
+    late_paid = 0
+    missed_months: List[str] = []
+    for s in loan.get("repayment_schedule", []) or []:
+        due = s.get("due_date")
+        if isinstance(due, str):
+            try: due = datetime.fromisoformat(due)
+            except Exception: due = None
+        if due is not None and due.tzinfo is None:
+            due = due.replace(tzinfo=timezone.utc)
+        if s.get("status") == "paid" and s.get("was_late"):
+            late_paid += 1
+            continue
+        if s.get("status") != "paid" and due is not None and due < now:
+            overdue_count += 1
+            overdue_amount += float(s.get("amount") or 0)
+            if due < month_start:
+                has_prior_month = True
+            missed_months.append(due.strftime("%b %Y"))
+    if overdue_count == 0:
+        kind = "on_track"
+    elif overdue_count > 1 or has_prior_month:
+        kind = "overdue_high"
+    else:
+        kind = "overdue_mild"
+    return {
+        "kind": kind,
+        "overdue_count": overdue_count,
+        "overdue_amount": round(overdue_amount, 2),
+        "has_prior_month": has_prior_month,
+        "late_paid_count": late_paid,
+        "missed_months": missed_months,
+    }
+
+
+async def _summarize_client_risk(client_id: str, lender_id: str) -> dict:
+    """Aggregate risk across all ACTIVE loans for this client.
+
+    Priority: any AT RISK loan \u21d2 client is AT RISK;
+              else any OVERDUE_MILD \u21d2 client is OVERDUE_MILD;
+              else ON TRACK.
+
+    Matches loans by `client_id` OR (as a fallback for legacy data) by the
+    borrower's mobile number (stored under `borrower.mobile` on the loan doc).
+    """
+    client = await db.clients.find_one(
+        {"client_id": client_id, "lender_id": lender_id}, {"_id": 0}
+    )
+    mobile = client.get("mobile") if client else None
+    loan_query: dict = {
+        "lender_id": lender_id,
+        "status": {"$in": ["active", "disbursed"]},
+    }
+    if mobile:
+        loan_query["$or"] = [
+            {"client_id": client_id},
+            {"borrower.mobile": mobile},
+        ]
+    else:
+        loan_query["client_id"] = client_id
+    cursor = db.loans.find(loan_query, {"_id": 0})
+    loans = await cursor.to_list(500)
+
+    worst_rank = 0  # 0=on_track, 1=overdue_mild, 2=overdue_high
+    total_overdue_count = 0
+    total_overdue_amount = 0.0
+    total_late_paid = 0
+    missed_months_set: set[str] = set()
+    overdue_loan_ids: List[dict] = []
+
+    for l in loans:
+        c = _classify_loan_risk(l)
+        rank = 2 if c["kind"] == "overdue_high" else (1 if c["kind"] == "overdue_mild" else 0)
+        worst_rank = max(worst_rank, rank)
+        total_overdue_count += c["overdue_count"]
+        total_overdue_amount += c["overdue_amount"]
+        total_late_paid += c["late_paid_count"]
+        for m in c["missed_months"]:
+            missed_months_set.add(m)
+        if c["kind"] in ("overdue_mild", "overdue_high"):
+            overdue_loan_ids.append({
+                "loan_id": l.get("loan_id"),
+                "kind": c["kind"],
+                "overdue_count": c["overdue_count"],
+                "overdue_amount": c["overdue_amount"],
+            })
+
+    kind = "overdue_high" if worst_rank == 2 else ("overdue_mild" if worst_rank == 1 else "on_track")
+    return {
+        "client_id": client_id,
+        "kind": kind,
+        "late_payments": total_late_paid,
+        "missed_months": sorted(missed_months_set),
+        "missed_months_count": len(missed_months_set),
+        "overdue_count": total_overdue_count,
+        "overdue_amount": round(total_overdue_amount, 2),
+        "overdue_loans": overdue_loan_ids,
+        "active_loan_count": len(loans),
+    }
+
+
+@api.get("/clients/{client_id}/risk-summary")
+async def client_risk_summary(client_id: str, current: UserPublic = Depends(get_current_user)):
+    """Return aggregated risk across all ACTIVE loans for a client.
+    Used by the mobile + web apps for:
+      \u2022 the coloured badge on the client list + detail
+      \u2022 the pre-loan-creation warning modal
+    """
+    client = await db.clients.find_one(
+        {"client_id": client_id, "lender_id": current.user_id}, {"_id": 0}
+    )
+    if not client:
+        raise HTTPException(404, "Client not found")
+    return await _summarize_client_risk(client_id, current.user_id)
+
 
 # ---------- Loan Analysis (Bank statement + CIBIL) ----------
 async def _llm_json(system: str, user: str, session_id: str) -> dict:

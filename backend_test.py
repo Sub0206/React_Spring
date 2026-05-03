@@ -1,309 +1,236 @@
 """
-Iteration 24 — re-verify server-side passcode auth endpoints under realistic
-production scenarios.
-
-Targets the live preview backend via REACT_APP/EXPO_PUBLIC_BACKEND_URL.
-Endpoints exercised: /api/v1/auth/* (the /api/v1/<x> middleware aliases the
-canonical /api/<x> handlers, so this validates BOTH paths in spirit).
-
-Reference creds (from /app/memory/test_credentials.md):
-    Mobile  : 9876543210
-    Passcode: 5678
+Backend regression tests for:
+  1. Enriched GET /api/v1/clients (risk_kind, risk_overdue_count, risk_overdue_amount)
+  2. GET /api/v1/clients/{id}/risk-summary (keys, 404, 401)
+  3. Consistency: enriched list risk_kind == risk-summary kind for same client
+  4. Dashboard portfolio_health still emits overdue_mild and overdue_high as separate ints
+  5. Rate limiter regression on POST /api/v1/auth/passcode-login
 """
-import os
-import re
+import sys
 import time
-import uuid
-import json
-import base64
 import requests
-from datetime import datetime
-from pathlib import Path
-import jwt as pyjwt
+from collections import Counter
 
-# Resolve backend URL from frontend .env
-FRONT_ENV = Path("/app/frontend/.env")
-BACKEND_URL = None
-for line in FRONT_ENV.read_text().splitlines():
-    if line.startswith("EXPO_PUBLIC_BACKEND_URL="):
-        BACKEND_URL = line.split("=", 1)[1].strip().strip('"')
-        break
-assert BACKEND_URL, "EXPO_PUBLIC_BACKEND_URL not found"
-API_V1 = f"{BACKEND_URL}/api/v1"
-API_LEGACY = f"{BACKEND_URL}/api"
-print(f"BACKEND={BACKEND_URL}\n")
+BASE = "https://lending-hub-63.preview.emergentagent.com"
+API = f"{BASE}/api/v1"
 
-results = []  # (name, passed, evidence)
+MOBILE = "9876543210"
+PASSCODE = "5678"
+BAD_MOBILE = "9876999999"
+BAD_PASSCODE = "0000"
 
-def record(name, passed, evidence=""):
-    icon = "✅" if passed else "❌"
-    results.append((name, passed, evidence))
-    print(f"{icon} {name}  {evidence}")
-
-def post(path, json_body=None, token=None, base=API_V1):
-    headers = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return requests.post(f"{base}{path}", json=json_body or {}, headers=headers, timeout=30)
-
-def get(path, params=None, token=None, base=API_V1):
-    headers = {}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return requests.get(f"{base}{path}", params=params or {}, headers=headers, timeout=30)
+results = []
 
 
-# ---------------------------------------------------------------------------
-# 1. Happy-path scenarios for existing user 9876543210 (passcode = 5678)
-# ---------------------------------------------------------------------------
-print("=== 1. HAPPY-PATH for 9876543210 (passcode 5678) ===")
-EXISTING_MOBILE = "9876543210"
-EXISTING_PASSCODE = "5678"
-
-r = get("/auth/has-passcode", params={"mobile": EXISTING_MOBILE})
-ok = r.status_code == 200 and r.json().get("has_passcode") is True
-record("1.1 has-passcode for existing user → true", ok,
-       f"status={r.status_code}, body={r.json() if r.status_code==200 else r.text}")
-
-r = post("/auth/passcode-login", {"mobile": EXISTING_MOBILE, "passcode": EXISTING_PASSCODE})
-existing_token = None
-ok = r.status_code == 200 and "access_token" in r.json()
-if ok:
-    existing_token = r.json()["access_token"]
-record("1.2 passcode-login mobile/5678 → 200 + JWT", ok,
-       f"status={r.status_code}")
-
-# Decode JWT and check 30-day TTL
-ttl_ok = False
-ttl_evidence = ""
-if existing_token:
-    try:
-        payload = pyjwt.decode(existing_token, options={"verify_signature": False})
-        delta = int(payload["exp"]) - int(payload["iat"])
-        ttl_ok = delta >= 29 * 86400
-        ttl_evidence = f"exp-iat={delta}s ({delta/86400:.4f}d)"
-    except Exception as e:
-        ttl_evidence = f"decode error: {e}"
-record("1.3 JWT ttl (exp-iat) >= 29 days", ttl_ok, ttl_evidence)
-
-r = post("/auth/verify-passcode", {"passcode": EXISTING_PASSCODE}, token=existing_token)
-ok = r.status_code == 200 and r.json().get("ok") is True
-record("1.4 verify-passcode (correct) → 200 {ok:true}", ok,
-       f"status={r.status_code}, body={r.text[:160]}")
-
-# verify-passcode does NOT issue a new token (no access_token field expected)
-no_new_token = False
-if r.status_code == 200:
-    no_new_token = "access_token" not in r.json()
-record("1.5 verify-passcode does NOT issue new token", no_new_token,
-       f"keys={list(r.json().keys()) if r.status_code==200 else r.status_code}")
-
-r = post("/auth/verify-passcode", {"passcode": "0000"}, token=existing_token)
-ok = r.status_code == 401 and "passcode" in (r.json().get("detail", "").lower())
-record("1.6 verify-passcode (wrong 0000) → 401", ok,
-       f"status={r.status_code}, detail={r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else r.text[:120]}")
+def rec(name: str, ok: bool, evidence: str):
+    status = "PASS" if ok else "FAIL"
+    line = f"[{status}] {name} :: {evidence}"
+    print(line)
+    results.append((ok, name, evidence))
 
 
-# ---------------------------------------------------------------------------
-# 2. Sign-up → set-passcode → passcode-login flow (fresh mobile)
-# ---------------------------------------------------------------------------
-print("\n=== 2. SIGN-UP → SET-PASSCODE → PASSCODE-LOGIN ===")
-NEW_MOBILE = "9000000077"
-# Best-effort cleanup if user already exists from previous runs:
-# we cannot DELETE users via API, so if the mobile already has a passcode
-# we simply switch to a less-used number.
-probe = get("/auth/has-passcode", params={"mobile": NEW_MOBILE}).json()
-if probe.get("has_passcode"):
-    NEW_MOBILE = "9000007" + str(int(time.time()) % 1000).zfill(3)
-    print(f"   (mobile collided — switching to fresh {NEW_MOBILE})")
+def main() -> int:
+    # --- Login via passcode-login ---
+    r = requests.post(f"{API}/auth/passcode-login",
+                      json={"mobile": MOBILE, "passcode": PASSCODE},
+                      timeout=30)
+    if r.status_code != 200:
+        rec("auth/passcode-login (happy path)", False,
+            f"HTTP {r.status_code} body={r.text[:200]}")
+        return 1
+    tok = r.json().get("access_token")
+    rec("auth/passcode-login (happy path)", bool(tok),
+        f"200, token_len={len(tok or '')}")
+    H = {"Authorization": f"Bearer {tok}"}
 
-r = post("/auth/send-otp", {"mobile": NEW_MOBILE, "name": "QA User", "purpose": "signup"})
-signup_otp = None
-if r.status_code == 200:
-    signup_otp = r.json().get("demo_otp")
-ok = r.status_code == 200 and signup_otp is not None
-record("2.1 send-otp(signup) → 200 + demo_otp", ok,
-       f"status={r.status_code}, demo_otp={signup_otp}")
+    # 1. Enriched GET /api/v1/clients
+    r = requests.get(f"{API}/clients", headers=H, timeout=30)
+    rec("clients: HTTP 200", r.status_code == 200, f"status={r.status_code}")
+    clients = r.json() if r.status_code == 200 else []
+    rec("clients: response is array", isinstance(clients, list),
+        f"type={type(clients).__name__} len={len(clients) if isinstance(clients, list) else 'NA'}")
+    if not isinstance(clients, list) or not clients:
+        rec("clients: at least one client returned", False, "empty list")
+        return 1
 
-r = post("/auth/verify-otp", {"mobile": NEW_MOBILE, "otp": signup_otp or ""})
-new_token = None
-if r.status_code == 200:
-    new_token = r.json().get("access_token")
-ok = (r.status_code == 200
-      and r.json().get("has_passcode") is False
-      and new_token)
-record("2.2 verify-otp → 200, has_passcode:false, JWT", ok,
-       f"status={r.status_code}, has_pc={r.json().get('has_passcode') if r.status_code==200 else '-'}")
+    missing = []
+    none_risk_kind = []
+    invalid_kind = []
+    allowed = {"on_track", "overdue_mild", "overdue_high"}
+    non_null_count = 0
+    type_fail = []
+    for c in clients:
+        if "risk_kind" not in c or "risk_overdue_count" not in c or "risk_overdue_amount" not in c:
+            missing.append(c.get("client_id"))
+            continue
+        if c.get("risk_kind") is None:
+            none_risk_kind.append(c.get("client_id"))
+            continue
+        if c["risk_kind"] not in allowed:
+            invalid_kind.append((c.get("client_id"), c["risk_kind"]))
+        else:
+            non_null_count += 1
+        if not isinstance(c["risk_overdue_count"], int):
+            type_fail.append((c.get("client_id"), "risk_overdue_count", type(c["risk_overdue_count"]).__name__))
+        if not isinstance(c["risk_overdue_amount"], (int, float)):
+            type_fail.append((c.get("client_id"), "risk_overdue_amount", type(c["risk_overdue_amount"]).__name__))
 
-r = post("/auth/set-passcode", {"passcode": "1111"}, token=new_token)
-ok = r.status_code == 200 and r.json().get("has_passcode") is True
-record("2.3 set-passcode 1111 (Auth) → 200 has_passcode:true", ok,
-       f"status={r.status_code}, body={r.text[:160]}")
+    rec("clients: every item has risk_kind/risk_overdue_count/risk_overdue_amount",
+        len(missing) == 0, f"missing_from={missing[:5]} (total {len(missing)})")
+    rec("clients: no item has risk_kind=null",
+        len(none_risk_kind) == 0, f"null_in={none_risk_kind[:5]} (total {len(none_risk_kind)})")
+    rec("clients: every risk_kind in {on_track,overdue_mild,overdue_high}",
+        len(invalid_kind) == 0, f"invalid={invalid_kind[:5]}")
+    rec("clients: at least one client has a non-null risk_kind",
+        non_null_count >= 1, f"non_null_count={non_null_count}/{len(clients)}")
+    rec("clients: numeric risk fields have correct types",
+        len(type_fail) == 0, f"bad={type_fail[:5]}")
 
-r = get("/auth/has-passcode", params={"mobile": NEW_MOBILE})
-ok = r.status_code == 200 and r.json().get("has_passcode") is True
-record("2.4 has-passcode for new user → true", ok,
-       f"status={r.status_code}, body={r.json() if r.status_code==200 else r.text}")
+    dist = Counter(c.get("risk_kind") for c in clients)
+    print(f"    risk_kind distribution: {dict(dist)}  total_clients={len(clients)}")
 
-r = post("/auth/passcode-login", {"mobile": NEW_MOBILE, "passcode": "1111"})
-ok = r.status_code == 200 and r.json().get("access_token")
-record("2.5 passcode-login 1111 → 200 + JWT", ok,
-       f"status={r.status_code}")
+    # 2. GET /api/v1/clients/{id}/risk-summary
+    first = clients[0]
+    cid = first.get("client_id")
 
+    r = requests.get(f"{API}/clients/{cid}/risk-summary", headers=H, timeout=30)
+    rec("risk-summary: HTTP 200 for first client", r.status_code == 200,
+        f"status={r.status_code} body={r.text[:200]}")
+    rs = r.json() if r.status_code == 200 else {}
+    required_keys = {
+        "client_id", "kind", "late_payments", "missed_months",
+        "missed_months_count", "overdue_count", "overdue_amount",
+        "overdue_loans", "active_loan_count"
+    }
+    missing_keys = required_keys - set(rs.keys())
+    rec("risk-summary: all required keys present",
+        len(missing_keys) == 0, f"missing={missing_keys}")
+    if rs:
+        rec("risk-summary: client_id matches", rs.get("client_id") == cid,
+            f"got={rs.get('client_id')} expected={cid}")
+        rec("risk-summary: kind in allowed set", rs.get("kind") in allowed,
+            f"kind={rs.get('kind')}")
+        rec("risk-summary: late_payments is int", isinstance(rs.get("late_payments"), int),
+            f"val={rs.get('late_payments')}")
+        mm = rs.get("missed_months")
+        rec("risk-summary: missed_months is array of strings",
+            isinstance(mm, list) and all(isinstance(s, str) for s in mm),
+            f"val={mm}")
+        import re
+        fmt_ok = isinstance(mm, list) and all(re.match(r"^[A-Z][a-z]{2} \d{4}$", s) for s in mm)
+        rec("risk-summary: missed_months formatted 'MMM YYYY'", fmt_ok,
+            f"sample={mm[:5] if isinstance(mm, list) else mm}")
+        rec("risk-summary: missed_months_count is int",
+            isinstance(rs.get("missed_months_count"), int),
+            f"val={rs.get('missed_months_count')}")
+        rec("risk-summary: overdue_count is int",
+            isinstance(rs.get("overdue_count"), int), f"val={rs.get('overdue_count')}")
+        rec("risk-summary: overdue_amount is number",
+            isinstance(rs.get("overdue_amount"), (int, float)),
+            f"val={rs.get('overdue_amount')}")
+        ol = rs.get("overdue_loans")
+        rec("risk-summary: overdue_loans is array", isinstance(ol, list),
+            f"type={type(ol).__name__}")
+        if isinstance(ol, list):
+            item_ok = all(
+                isinstance(item, dict) and
+                {"loan_id", "kind", "overdue_count", "overdue_amount"}.issubset(item.keys())
+                for item in ol
+            )
+            rec("risk-summary: each overdue_loans item has {loan_id,kind,overdue_count,overdue_amount}",
+                item_ok, f"sample={ol[:2]}")
+        rec("risk-summary: active_loan_count is int",
+            isinstance(rs.get("active_loan_count"), int),
+            f"val={rs.get('active_loan_count')}")
 
-# ---------------------------------------------------------------------------
-# 3. Forgot/reset flow
-# ---------------------------------------------------------------------------
-print("\n=== 3. FORGOT / RESET FLOW ===")
-r = post("/auth/send-otp", {"mobile": NEW_MOBILE, "purpose": "reset"})
-reset_otp = r.json().get("demo_otp") if r.status_code == 200 else None
-record("3.1 send-otp(reset) for known mobile → 200", r.status_code == 200 and reset_otp,
-       f"status={r.status_code}, demo_otp={reset_otp}")
+    # 404 for unknown client id
+    r = requests.get(f"{API}/clients/cli_does_not_exist_xyz/risk-summary",
+                     headers=H, timeout=30)
+    rec("risk-summary: 404 for unknown client id",
+        r.status_code == 404, f"status={r.status_code} body={r.text[:100]}")
 
-r = post("/auth/reset-passcode",
-         {"mobile": NEW_MOBILE, "otp": reset_otp or "", "passcode": "2222"})
-reset_token = r.json().get("access_token") if r.status_code == 200 else None
-ok = (r.status_code == 200 and reset_token
-      and r.json().get("has_passcode") is True)
-record("3.2 reset-passcode → 200 + JWT + has_passcode:true", ok,
-       f"status={r.status_code}")
+    # 401 without Authorization header
+    r = requests.get(f"{API}/clients/{cid}/risk-summary", timeout=30)
+    rec("risk-summary: 401 without Authorization",
+        r.status_code == 401, f"status={r.status_code} body={r.text[:100]}")
 
-r = post("/auth/passcode-login", {"mobile": NEW_MOBILE, "passcode": "1111"})
-ok = r.status_code == 401
-record("3.3 old passcode 1111 now → 401", ok,
-       f"status={r.status_code}, detail={r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else r.text[:120]}")
+    # 3. Consistency: enriched list risk_kind == risk-summary kind
+    list_kind = first.get("risk_kind")
+    rs_kind = rs.get("kind")
+    rec("consistency: list.risk_kind == risk-summary.kind (first client)",
+        list_kind == rs_kind,
+        f"list={list_kind} summary={rs_kind} client={cid}")
 
-r = post("/auth/passcode-login", {"mobile": NEW_MOBILE, "passcode": "2222"})
-ok = r.status_code == 200 and r.json().get("access_token")
-record("3.4 new passcode 2222 → 200 + JWT", ok, f"status={r.status_code}")
+    # Verify for a few more clients for robustness
+    extra_ok = True
+    mismatches = []
+    for c in clients[1:6]:
+        cc = c.get("client_id")
+        rr = requests.get(f"{API}/clients/{cc}/risk-summary", headers=H, timeout=30)
+        if rr.status_code != 200:
+            continue
+        k2 = rr.json().get("kind")
+        if c.get("risk_kind") != k2:
+            extra_ok = False
+            mismatches.append((cc, c.get("risk_kind"), k2))
+    rec("consistency: list.risk_kind == risk-summary.kind (next 5 clients)",
+        extra_ok, f"mismatches={mismatches}")
 
-# Reuse reset OTP a 2nd time
-r = post("/auth/reset-passcode",
-         {"mobile": NEW_MOBILE, "otp": reset_otp or "", "passcode": "3333"})
-ok = r.status_code == 400
-record("3.5 reuse same reset OTP → 400", ok,
-       f"status={r.status_code}, detail={r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else r.text[:120]}")
+    # 4. Dashboard portfolio_health still split
+    r = requests.get(f"{API}/dashboard", headers=H, timeout=30)
+    rec("dashboard: HTTP 200", r.status_code == 200, f"status={r.status_code}")
+    dash = r.json() if r.status_code == 200 else {}
+    ph = dash.get("portfolio_health", {})
+    rec("dashboard: portfolio_health.overdue_mild present and int",
+        "overdue_mild" in ph and isinstance(ph.get("overdue_mild"), int),
+        f"val={ph.get('overdue_mild')} type={type(ph.get('overdue_mild')).__name__}")
+    rec("dashboard: portfolio_health.overdue_high present and int",
+        "overdue_high" in ph and isinstance(ph.get("overdue_high"), int),
+        f"val={ph.get('overdue_high')} type={type(ph.get('overdue_high')).__name__}")
+    print(f"    portfolio_health={ph}")
 
-# Reset OTP for unknown mobile
-r = post("/auth/send-otp", {"mobile": "9000000888", "purpose": "reset"})
-ok = r.status_code == 404
-record("3.6 send-otp(reset) for unknown mobile → 404", ok,
-       f"status={r.status_code}, detail={r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else r.text[:120]}")
+    # 5. Rate limiter regression on passcode-login
+    wrong_url = f"{API}/auth/passcode-login"
+    statuses = []
+    for i in range(5):
+        rr = requests.post(wrong_url,
+                           json={"mobile": BAD_MOBILE, "passcode": BAD_PASSCODE},
+                           timeout=30)
+        statuses.append(rr.status_code)
+        time.sleep(0.1)
+    rec("rate-limit: first 5 wrong passcodes all return 401",
+        all(s == 401 for s in statuses), f"statuses={statuses}")
 
+    # 6th attempt → 429 with Retry-After
+    rr = requests.post(wrong_url,
+                       json={"mobile": BAD_MOBILE, "passcode": BAD_PASSCODE},
+                       timeout=30)
+    retry_after = rr.headers.get("Retry-After")
+    rec("rate-limit: 6th attempt returns 429",
+        rr.status_code == 429, f"status={rr.status_code} body={rr.text[:200]}")
+    rec("rate-limit: 6th attempt has Retry-After header",
+        retry_after is not None and str(retry_after).strip() != "",
+        f"Retry-After={retry_after}")
 
-# ---------------------------------------------------------------------------
-# 4. Edge cases & validation
-# ---------------------------------------------------------------------------
-print("\n=== 4. VALIDATION / EDGE CASES ===")
-r = get("/auth/has-passcode", params={"mobile": ""})
-ok = r.status_code == 200 and r.json().get("has_passcode") is False
-record("4.1 has-passcode empty mobile → 200 false", ok,
-       f"status={r.status_code}, body={r.text[:120]}")
+    # Correct login with valid mobile/passcode still returns 200
+    rr = requests.post(wrong_url,
+                       json={"mobile": MOBILE, "passcode": PASSCODE},
+                       timeout=30)
+    ok_token = rr.status_code == 200 and bool(rr.json().get("access_token"))
+    rec("rate-limit: valid mobile/passcode still returns 200 (separate bucket)",
+        ok_token, f"status={rr.status_code} body_preview={rr.text[:150]}")
 
-r = get("/auth/has-passcode", params={"mobile": "abc"})
-ok = r.status_code == 200 and r.json().get("has_passcode") is False
-record("4.2 has-passcode non-numeric → 200 false", ok,
-       f"status={r.status_code}, body={r.text[:120]}")
-
-r = get("/auth/has-passcode", params={"mobile": "9999999999"})
-ok = r.status_code == 200 and r.json().get("has_passcode") is False
-record("4.3 has-passcode unknown mobile → 200 false (no enum leak)", ok,
-       f"status={r.status_code}, body={r.text[:120]}")
-
-r = post("/auth/passcode-login", {"mobile": EXISTING_MOBILE, "passcode": ""})
-ok = r.status_code == 400
-record("4.4 passcode-login empty passcode → 400", ok,
-       f"status={r.status_code}, detail={r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else r.text[:120]}")
-
-r = post("/auth/passcode-login", {"mobile": EXISTING_MOBILE, "passcode": "12"})
-ok = r.status_code == 400
-record("4.5 passcode-login 2 digits → 400", ok,
-       f"status={r.status_code}, detail={r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else r.text[:120]}")
-
-r = post("/auth/passcode-login", {"mobile": EXISTING_MOBILE, "passcode": "abcd"})
-ok = r.status_code == 400
-record("4.6 passcode-login non-numeric → 400", ok,
-       f"status={r.status_code}, detail={r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else r.text[:120]}")
-
-# Account with NO passcode → create one via signup, do NOT set passcode, then attempt passcode-login
-NOPC_MOBILE = "9000007" + str((int(time.time()) + 5) % 1000).zfill(3)
-r = post("/auth/send-otp", {"mobile": NOPC_MOBILE, "name": "NoPC User", "purpose": "signup"})
-nopc_otp = r.json().get("demo_otp") if r.status_code == 200 else None
-r = post("/auth/verify-otp", {"mobile": NOPC_MOBILE, "otp": nopc_otp or ""})
-nopc_created = r.status_code == 200
-# Now attempt passcode-login WITHOUT having set a passcode
-r = post("/auth/passcode-login", {"mobile": NOPC_MOBILE, "passcode": "1234"})
-ok = r.status_code == 401
-detail = r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else r.text[:120]
-record("4.7 passcode-login on account w/o passcode → 401 generic", ok,
-       f"status={r.status_code}, detail={detail!r}")
-
-r = post("/auth/set-passcode", {"passcode": "1234"})  # no auth header
-ok = r.status_code == 401
-record("4.8 set-passcode without Auth → 401", ok,
-       f"status={r.status_code}, detail={r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else r.text[:120]}")
-
-# We need an auth token to send 5-digit
-r = post("/auth/set-passcode", {"passcode": "12345"}, token=existing_token)
-ok = r.status_code == 400
-record("4.9 set-passcode 5 digits → 400", ok,
-       f"status={r.status_code}, detail={r.json().get('detail') if r.headers.get('content-type','').startswith('application/json') else r.text[:120]}")
-
-
-# ---------------------------------------------------------------------------
-# 5. Brute-force protection (informational only)
-# ---------------------------------------------------------------------------
-print("\n=== 5. BRUTE-FORCE behaviour (informational) ===")
-codes = []
-for i in range(8):
-    r = post("/auth/passcode-login", {"mobile": EXISTING_MOBILE, "passcode": "0000"})
-    codes.append(r.status_code)
-unique = set(codes)
-no_lockout = unique == {401}
-# Now ensure the correct passcode still works (no permanent lockout side-effect)
-r = post("/auth/passcode-login", {"mobile": EXISTING_MOBILE, "passcode": EXISTING_PASSCODE})
-correct_still_works = r.status_code == 200
-record("5.1 8x wrong attempts — codes captured", True,
-       f"status_codes={codes}, lockout={'NO' if no_lockout else 'YES (>=1 non-401 returned)'}")
-record("5.2 Correct passcode still works AFTER 8 wrong attempts", correct_still_works,
-       f"status={r.status_code}  (informational — brute-force protection NOT implemented server-side)")
-
-
-# ---------------------------------------------------------------------------
-# 6. Regression — protected endpoints with freshly-issued JWT
-# ---------------------------------------------------------------------------
-print("\n=== 6. REGRESSION (protected endpoints) ===")
-fresh_token = r.json().get("access_token") if r.status_code == 200 else existing_token
-# /dashboard
-r = get("/dashboard", token=fresh_token)
-ok = r.status_code == 200
-record("6.1 GET /api/v1/dashboard with new JWT → 200", ok,
-       f"status={r.status_code}, keys={list(r.json().keys())[:6] if r.status_code==200 else r.text[:120]}")
-
-# /borrowers (alias for /clients via v1 middleware)
-r = get("/borrowers", token=fresh_token)
-ok = r.status_code == 200 and isinstance(r.json(), list)
-record("6.2 GET /api/v1/borrowers with new JWT → 200 (list)", ok,
-       f"status={r.status_code}, count={len(r.json()) if r.status_code==200 else '-'}")
-
-# Also assert legacy /api/auth/* mirror works
-print("\n=== 7. LEGACY /api/auth/* mirror ===")
-r = requests.get(f"{API_LEGACY}/auth/has-passcode", params={"mobile": EXISTING_MOBILE}, timeout=15)
-ok = r.status_code == 200 and r.json().get("has_passcode") is True
-record("7.1 GET /api/auth/has-passcode (legacy) → 200 true", ok,
-       f"status={r.status_code}, body={r.text[:120]}")
+    # Summary
+    print("\n" + "=" * 72)
+    passed = sum(1 for ok, *_ in results if ok)
+    failed = [(n, e) for ok, n, e in results if not ok]
+    print(f"TOTAL: {passed}/{len(results)} PASSED, {len(failed)} FAILED")
+    if failed:
+        print("\nFAILURES:")
+        for n, e in failed:
+            print(f"  - {n}  [{e}]")
+    return 0 if not failed else 1
 
 
-# ---------------------------------------------------------------------------
-# Summary
-# ---------------------------------------------------------------------------
-print("\n" + "=" * 70)
-passed = sum(1 for _, p, _ in results if p)
-total = len(results)
-print(f"PASSED {passed}/{total}")
-fails = [r for r in results if not r[1]]
-if fails:
-    print("\nFAILED CASES:")
-    for n, _, ev in fails:
-        print(f"  ❌ {n}  {ev}")
-exit(0 if not fails else 1)
+if __name__ == "__main__":
+    sys.exit(main())
