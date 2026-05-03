@@ -35,7 +35,7 @@ function bucketOf(due: Date, now = new Date()): Bucket {
   return "current";
 }
 
-type Action = "none" | "pay" | "reschedule" | "undo";
+type Action = "none" | "pay" | "reschedule";
 
 export default function LoanDetail() {
   const styles = useScreenStyles();
@@ -72,18 +72,9 @@ export default function LoanDetail() {
     setDateValue(fmt(d));
     setAction("reschedule");
   };
-  const confirmUndo = (e: Entry) => {
-    dlg.confirm({
-      title: "Rollback payment?",
-      message: `This will revert Month ${e.month} (₹${e.amount.toLocaleString()}) back to unpaid. Balance and dashboard counts will update.\n\nThis action is safe but should be used carefully.`,
-      tone: "danger",
-      icon: "arrow-undo",
-      confirmLabel: "Yes, undo",
-      cancelLabel: "Cancel",
-      destructive: true,
-      onConfirm: () => submitUndo(e),
-    });
-  };
+  // NOTE: Undo-payment flow intentionally removed from the UI per product rule:
+  // "🟢 PAID → No actions, No Undo, READ-ONLY strict". The backend endpoint
+  // still exists for audit/admin use but is unreachable from the app.
 
   const submitPay = async () => {
     if (!active) return;
@@ -129,16 +120,7 @@ export default function LoanDetail() {
     } finally { setSaving(false); }
   };
 
-  const submitUndo = async (e: Entry) => {
-    setSaving(true);
-    try {
-      const d = await api<Loan>(`/loans/${id}/undo-pay/${e.month}`, { method: "POST" });
-      setLoan(d);
-      dlg.success("Payment rolled back", `Month ${e.month} is back to unpaid. Dashboard updated.`);
-    } catch (err: any) {
-      dlg.error("Undo failed", err.message);
-    } finally { setSaving(false); }
-  };
+  // Undo mutation removed per product rule (see comment above).
 
   const shiftDate = (iso: string, days: number) => {
     const d = new Date(`${iso}T12:00:00Z`);
@@ -222,15 +204,19 @@ export default function LoanDetail() {
             ? (isLate ? "alert-circle" : "checkmark-circle")
             : isOverdue ? "alert-circle" : bucket === "current" ? "flash" : bucket === "past" ? "lock-closed" : "time-outline";
 
-          // P0 rule: every unpaid EMI (past or current) must allow Mark Paid +
-          // Reschedule. Only future (not-yet-due) rows are locked — and even
-          // those are payable for the special "pay ahead" case but not
-          // re-schedulable. A past-due / overdue EMI is ALWAYS payable.
-          const isUnpaid = !isPaid;
+          // STRICT ACTION RULES (2026-05-03):
+          //   🟢 PAID (any month)         → READ-ONLY (no Undo, no Mark Paid, no Reschedule)
+          //   🟡 OVERDUE MILD             → Mark Paid + Reschedule
+          //   🔴 AT RISK                  → Mark Paid + Reschedule
+          //   🔵 DUE NOW (current-month)  → Mark Paid + Reschedule
+          //   ⚪ FUTURE (upcoming month)   → no actions
+          //
+          // Bucket is computed off the calendar MONTH of the due-date, not the
+          // instantaneous "now". That way a current-month row is actionable
+          // whether it's already past-due OR simply due later in the month.
           const isLoanOpen = loan.status === "active";
-          const canPay       = isUnpaid && isLoanOpen && bucket !== "future";
-          const canResched   = isUnpaid && isLoanOpen && bucket !== "future";
-          const canUndo      = isPaid && loan.status !== "completed";
+          const canPay     = !isPaid && isLoanOpen && bucket !== "future";
+          const canResched = !isPaid && isLoanOpen && bucket !== "future";
 
           const statusLabel = isPaid
             ? (isLate ? "OVERDUE PAID" : "PAID")
@@ -273,8 +259,9 @@ export default function LoanDetail() {
                 <Text style={styles.rowAmount}>₹{e.amount.toLocaleString()}</Text>
               </View>
 
-              {/* Action buttons — ONLY for current month */}
-              {(canPay || canResched || canUndo) && (
+              {/* Action buttons — ONLY shown for unpaid, non-future EMIs.
+                  Paid rows are strictly read-only per product rule. */}
+              {(canPay || canResched) && (
                 <View style={styles.actionRow}>
                   {canPay && (
                     <TouchableOpacity
@@ -296,17 +283,6 @@ export default function LoanDetail() {
                     >
                       <Ionicons name="calendar" size={15} color={Colors.primary} />
                       <Text style={styles.actionRescheduleText}>Reschedule</Text>
-                    </TouchableOpacity>
-                  )}
-                  {canUndo && (
-                    <TouchableOpacity
-                      testID={`undo-month-${e.month}`}
-                      onPress={() => confirmUndo(e)}
-                      activeOpacity={0.85}
-                      style={[styles.actionBtn, styles.actionUndo]}
-                    >
-                      <Ionicons name="arrow-undo" size={15} color={Colors.danger} />
-                      <Text style={styles.actionUndoText}>Undo payment</Text>
                     </TouchableOpacity>
                   )}
                 </View>
@@ -518,8 +494,7 @@ function useScreenStyles() {
   actionPayText: { color: "#fff", fontWeight: "800", fontSize: 12 },
   actionReschedule: { backgroundColor: Colors.primarySoft, borderWidth: 1.2, borderColor: Colors.primary + "55" },
   actionRescheduleText: { color: Colors.primary, fontWeight: "800", fontSize: 12 },
-  actionUndo: { backgroundColor: Colors.dangerSoft, borderWidth: 1.2, borderColor: Colors.danger + "55" },
-  actionUndoText: { color: Colors.danger, fontWeight: "800", fontSize: 12 },
+  // (Undo-related styles deliberately omitted — feature removed 2026-05-03.)
 
   lockedNotice: {
     flexDirection: "row", alignItems: "center", gap: 5,
