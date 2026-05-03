@@ -23,8 +23,14 @@ const DARK = {
   secondary: "#10B981", secondaryDark: "#059669", secondarySoft: "#0B3F2E",
   gold: "#FBBF24", goldSoft: "#78350F",
   success: "#10B981", successSoft: "#0B3F2E",
-  warning: "#F59E0B", warningSoft: "#7C4A10",
-  danger: "#EF4444", dangerDark: "#DC2626", dangerSoft: "#5A1A1A",
+  // Dark-mode readability: brighter warning (yellow) and danger (red) so text
+  // stays legible on navy surfaces. Tints match WCAG AA contrast.
+  warning: "#FFD166", warningSoft: "#7C4A10",
+  danger: "#FF6B6B", dangerDark: "#FF4D4F", dangerSoft: "#5A1A1A",
+  // Dedicated loan-risk tokens used by the status classifier. Kept separate
+  // from the generic warning/danger so we can tune them independently later.
+  riskMild: "#FFD166", riskMildSoft: "#3F2E10", riskMildBorder: "#8A6A1E",
+  riskHigh: "#FF6B6B", riskHighSoft: "#441718", riskHighBorder: "#8F2F31",
   info: "#22D3EE", infoSoft: "#113F4B",
   accent: "#14B8A6", accentSoft: "#0F3D3A",
   bg: "#0B1220", bgAlt: "#131C2E", surface: "#1B273F", surfaceAlt: "#243049",
@@ -39,6 +45,8 @@ const LIGHT = {
   success: "#059669", successSoft: "#D1FAE5",
   warning: "#D97706", warningSoft: "#FEF3C7",
   danger: "#DC2626", dangerDark: "#B91C1C", dangerSoft: "#FEE2E2",
+  riskMild: "#B7791F", riskMildSoft: "#FEF3C7", riskMildBorder: "#F5C77E",
+  riskHigh: "#C4362A", riskHighSoft: "#FEE2E2", riskHighBorder: "#F28C87",
   info: "#0EA5E9", infoSoft: "#E0F2FE",
   accent: "#0D9488", accentSoft: "#CCFBF1",
   bg: "#F8FAFC", bgAlt: "#F1F5F9", surface: "#FFFFFF", surfaceAlt: "#FAFBFE",

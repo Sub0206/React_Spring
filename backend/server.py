@@ -2809,14 +2809,23 @@ async def dashboard(current: UserPublic = Depends(get_current_user)):
     default_rate = (default_count / len(loans) * 100) if loans else 0.0
 
     # Portfolio health breakdown using global status rules
-    ph = {"on_track": 0, "overdue": 0, "at_risk": 0, "completed": 0, "defaulted": 0}
+    # - on_track:      no unpaid past-due EMI
+    # - overdue_mild:  exactly ONE unpaid past-due EMI AND its due_date is in
+    #                  the current calendar month
+    # - overdue_high:  >1 unpaid past-due EMI OR any unpaid past-due EMI from
+    #                  a prior month
+    # - at_risk:       currently not overdue but has late-paid history
+    # - completed / defaulted: terminal states from loan.status
+    ph = {"on_track": 0, "overdue_mild": 0, "overdue_high": 0, "at_risk": 0, "completed": 0, "defaulted": 0}
     now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     for l in loans:
         if l["status"] == "completed":
             ph["completed"] += 1; continue
         if l["status"] == "defaulted":
             ph["defaulted"] += 1; continue
-        has_overdue = False
+        overdue_entries = 0
+        has_prior_month = False
         has_late_history = False
         for s in l.get("repayment_schedule", []):
             due = s["due_date"]
@@ -2826,15 +2835,22 @@ async def dashboard(current: UserPublic = Depends(get_current_user)):
             if due is not None and due.tzinfo is None:
                 due = due.replace(tzinfo=timezone.utc)
             if s.get("status") != "paid" and due is not None and due < now:
-                has_overdue = True
+                overdue_entries += 1
+                if due < month_start:
+                    has_prior_month = True
             if s.get("status") == "paid" and s.get("was_late"):
                 has_late_history = True
-        if has_overdue:
-            ph["overdue"] += 1
-        elif has_late_history:
-            ph["at_risk"] += 1
+        if overdue_entries == 0:
+            if has_late_history:
+                ph["at_risk"] += 1
+            else:
+                ph["on_track"] += 1
+        elif overdue_entries > 1 or has_prior_month:
+            ph["overdue_high"] += 1
         else:
-            ph["on_track"] += 1
+            ph["overdue_mild"] += 1
+    # Legacy `overdue` key kept for older clients — equals mild + high.
+    ph["overdue"] = ph["overdue_mild"] + ph["overdue_high"]
     # Overdue: unpaid schedule entries whose due_date < now
     overdue_count = 0
     overdue_amount = 0.0

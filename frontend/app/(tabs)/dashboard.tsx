@@ -22,7 +22,17 @@ type Stats = {
   current_month_repaid: number;
   current_month_disbursed: number;
   default_rate: number;
-  portfolio_health?: { on_track: number; overdue: number; at_risk: number; completed: number; defaulted: number };
+  portfolio_health?: {
+    on_track: number;
+    /** New split: overdue_mild (yellow) + overdue_high (red, includes multi-month) */
+    overdue_mild?: number;
+    overdue_high?: number;
+    /** Legacy combined — still emitted by backend for older clients */
+    overdue?: number;
+    at_risk: number;
+    completed: number;
+    defaulted: number;
+  };
   inflow_chart: { label: string; value: number }[];
   outflow_chart: { label: string; value: number }[];
 };
@@ -113,17 +123,17 @@ export default function Dashboard() {
                 icon="trending-up"
               />
               <HealthTile
-                onPress={() => router.push({ pathname: "/(tabs)/loans", params: { filter: "overdue" } } as any)}
+                onPress={() => router.push({ pathname: "/(tabs)/loans", params: { filter: "overdue_mild" } } as any)}
                 label="Overdue"
-                count={stats.portfolio_health.overdue}
-                color={Colors.danger}
+                count={stats.portfolio_health.overdue_mild ?? 0}
+                color={Colors.riskMild}
                 icon="warning"
               />
               <HealthTile
-                onPress={() => router.push({ pathname: "/(tabs)/loans", params: { filter: "at_risk" } } as any)}
+                onPress={() => router.push({ pathname: "/(tabs)/loans", params: { filter: "overdue_high" } } as any)}
                 label="At Risk"
-                count={stats.portfolio_health.at_risk}
-                color={Colors.danger}
+                count={stats.portfolio_health.overdue_high ?? 0}
+                color={Colors.riskHigh}
                 icon="alert-circle"
               />
               <HealthTile

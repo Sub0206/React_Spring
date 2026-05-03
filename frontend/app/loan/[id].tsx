@@ -11,6 +11,7 @@ import { Card, PrimaryButton, InitialsAvatar } from "../../src/ui";
 import { useDialog } from "../../src/dialog";
 import { Colors, Radii, Shadows, Spacing } from "../../src/theme";
 import { useThemedStyles } from "../../src/themeContext";
+import { classifyLoan } from "../../src/loanStatus";
 
 type Entry = { month: number; due_date: string; amount: number; status: string; paid_at?: string | null; was_late?: boolean };
 type Loan = {
@@ -173,11 +174,14 @@ export default function LoanDetail() {
             <Text style={styles.name}>{loan.borrower.name}</Text>
             <Text style={styles.meta}>Loan {loan.loan_id.slice(0, 10)}…</Text>
           </View>
-          <View style={[styles.badge, { backgroundColor: (loan.status === "active" ? Colors.success : loan.status === "completed" ? Colors.primary : Colors.danger) + "1A" }]}>
-            <Text style={[styles.badgeText, { color: loan.status === "active" ? Colors.success : loan.status === "completed" ? Colors.primary : Colors.danger }]}>
-              {loan.status.toUpperCase()}
-            </Text>
-          </View>
+          {(() => {
+            const badge = classifyLoan(loan as any);
+            return (
+              <View style={[styles.badge, { backgroundColor: badge.bg, borderColor: badge.border, borderWidth: 1 }]}>
+                <Text style={[styles.badgeText, { color: badge.color }]}>{badge.label}</Text>
+              </View>
+            );
+          })()}
         </View>
 
         <Card style={{ marginTop: Spacing.md }}>
