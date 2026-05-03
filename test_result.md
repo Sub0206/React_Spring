@@ -2421,3 +2421,49 @@ frontend:
           native). The DOM text-count proves the UI no longer contains the Undo
           element though.
 
+
+
+## Updated 2026-05-03 (Agent main): Iteration 29 — Web App UI/Functional Parity (P0)
+
+### Scope
+User flagged 7 simultaneous P0 regressions on the web app: (1) broken customer detail route, (2) Applications menu to remove, (3) topbar layout misaligned, (4) sidebar overlapping content, (5) cramped UI, (6) mobile feature parity, (7) colour/logic consistency.
+
+### Changes shipped (all in `/app/webapp/`)
+1. **NEW `src/app/(app)/customers/[id]/{page,CustomerDetailInner}.tsx`** — Customer detail page with hero card (avatar + risk chip + phone/email/PAN + New-loan button), 4 metric tiles (Active loans / Principal / Outstanding / Overdue), KYC card with verified ticks, Risk Summary (overdue EMIs / amount / late payments / missed months pill list), and an All-loans card linking each loan → `/loans/[id]`. Uses shared `classifyLoan()` for byte-identical colours with mobile.
+2. **Sidebar rewritten** — fixed `w-60` (240 px), `fixed inset-y-0 left-0 z-30`. Applications menu DELETED. Only 5 items left: Dashboard, Loans, Customers, Notifications, Settings.
+3. **Topbar rewritten** — search in the CENTRE (`flex-1 max-w-2xl`), theme tri-toggle + bell + profile pill with Sign-out popover DOCKED top-right.
+4. **`(app)/layout.tsx` rewritten** — `lg:pl-60` on the content wrapper so the fixed sidebar never overlaps. `<main className="flex-1 p-6">` gives the mandated 24 px padding.
+5. **Deleted** `/app/webapp/src/app/(app)/applications/` directory (was pure placeholder).
+
+### Build + deploy
+- `yarn build` → 11 pages, new dynamic `/customers/[id]` route, no TypeScript errors.
+- `vercel --prod --yes` → **https://lendiq-web-delta.vercel.app** (build #2 of 2026-05-03, deploy ID lendiq-ke3pxjy1l-subhash3).
+
+### Screenshots (1440×900)
+- `/tmp/NEW_01_dashboard_layout.png` — new sidebar+topbar; Applications removed.
+- `/tmp/NEW_02_customers_list.png` — filter counts 18/10/2/6.
+- `/tmp/NEW_03_customer_detail_atrisk.png` — Test High Risk Loan: red AT RISK chip, 3 overdue ₹15K, 3 missed months pills.
+- `/tmp/NEW_04_customer_detail_clean.png` — Test Clean Client: green ON TRACK chip, "Healthy" risk tile, 1 completed loan.
+
+### Programmatic assertions passed
+- `page.locator('aside a[href="/applications"]').count()` → **0**
+- `page.locator('aside a').count()` → **5**
+- Customer detail URLs `/customers/cli_test_scenario_4_high_loan`, `/customers/cli_test_scenario_5_clean` → 200 OK; both rendered full detail page correctly.
+
+frontend:
+  - task: "Web UI/functional parity — Customer Detail + sidebar + topbar + layout (iteration 29)"
+    implemented: true
+    working: true
+    file: "/app/webapp/src/app/(app)/customers/[id]/*, Sidebar.tsx, Topbar.tsx, (app)/layout.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          All 7 P0 items fixed in one pass. Customer detail renders end-to-end,
+          Applications menu + route deleted, sidebar fixed 240px with matching
+          content offset, topbar layout matches spec exactly (centre search,
+          right-aligned bell + profile). Verified with Playwright + screenshots,
+          re-deployed to Vercel prod.

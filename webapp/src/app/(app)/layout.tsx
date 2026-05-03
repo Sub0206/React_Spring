@@ -7,8 +7,14 @@ import { Sidebar } from '@/components/Sidebar';
 import { Topbar } from '@/components/Topbar';
 
 /**
- * Authenticated shell. OTP-only: if there is no user we bounce to /login.
- * There is no intermediate passcode screen any more.
+ * Authenticated shell — fixed sidebar + scrolling main area.
+ *
+ *   | Sidebar (240px, fixed) | Topbar (full width minus sidebar)  |
+ *   |                        | Main content (24px padding, scroll)|
+ *
+ * The sidebar is `fixed` in Sidebar.tsx, so we add left-margin on the
+ * content pane so the content never slides underneath. Content padding
+ * is 24 px (p-6) to match the spec.
  */
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -16,9 +22,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (loading) return;
-    if (!user) {
-      router.replace('/login');
-    }
+    if (!user) router.replace('/login');
   }, [loading, user, router]);
 
   if (loading || !user) {
@@ -30,11 +34,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="flex h-screen bg-bg text-text-primary">
+    <div className="min-h-screen bg-bg text-text-primary">
       <Sidebar />
-      <div className="flex min-w-0 flex-1 flex-col">
+      {/*
+        Content wrapper. On lg+ screens we push content right by the sidebar's
+        width (240 px) so the fixed sidebar doesn't overlap it. Below lg we
+        simply take the full viewport (sidebar is `hidden` there).
+      */}
+      <div className="flex min-h-screen flex-col lg:pl-60">
         <Topbar />
-        <main className="flex-1 overflow-y-auto">{children}</main>
+        <main className="flex-1 p-6">{children}</main>
       </div>
     </div>
   );

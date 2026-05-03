@@ -210,15 +210,15 @@ export default function DashboardPage() {
           <div className="text-lg font-bold">At a glance</div>
           <div className="mt-4 grid grid-cols-2 gap-3">
             <MiniStat icon={<Users size={16} />} label="Customers" value={String(customers)} />
-            <MiniStat icon={<FileText size={16} />} label="Pending Apps" value={String(pendingApps)} />
             <MiniStat icon={<TrendingUp size={16} />} label="Active" value={String(stats.active_loans)} />
             <MiniStat icon={<AlertTriangle size={16} />} label="At Risk" value={String(ph.overdue_high ?? 0)} tone="high" />
+            <MiniStat icon={<FileText size={16} />} label="Overdue" value={String(ph.overdue_mild ?? 0)} tone="mild" />
           </div>
           <button
-            onClick={() => router.push('/applications')}
+            onClick={() => router.push('/loans?filter=at_risk')}
             className="mt-5 w-full rounded-xl bg-primary/10 px-4 py-3 text-sm font-bold text-primary hover:bg-primary/20"
           >
-            Review pending applications
+            Review at-risk loans
           </button>
         </Card>
       </div>
@@ -307,17 +307,26 @@ function MiniStat({
   icon: React.ReactNode;
   label: string;
   value: string;
-  tone?: 'default' | 'high';
+  tone?: 'default' | 'high' | 'mild';
 }) {
   return (
     <div
       className={cn(
         'rounded-xl border border-border-light bg-bg-alt p-3',
-        tone === 'high' && 'border-risk-highBorder bg-risk-highSoft text-risk-high'
+        tone === 'high' && 'border-risk-highBorder bg-risk-highSoft text-risk-high',
+        tone === 'mild' && 'border-risk-mildBorder bg-risk-mildSoft text-risk-mild'
       )}
     >
       <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-text-muted">
-        <span className={cn(tone === 'high' ? 'text-risk-high' : 'text-text-secondary')}>{icon}</span>
+        <span
+          className={cn(
+            tone === 'high' ? 'text-risk-high'
+              : tone === 'mild' ? 'text-risk-mild'
+              : 'text-text-secondary'
+          )}
+        >
+          {icon}
+        </span>
         {label}
       </div>
       <div className="mt-1 text-xl font-extrabold">{value}</div>
