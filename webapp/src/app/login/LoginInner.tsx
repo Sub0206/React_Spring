@@ -1,20 +1,32 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { ChevronLeft, Lightbulb, Shield } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Card } from '@/components/ui/Card';
 import { useAuth } from '@/providers/AuthProvider';
-import { checkHasPasscode, sendOtp } from '@/lib/auth';
+import { sendOtp } from '@/lib/auth';
 
 type Step = 'mobile' | 'otp';
-type Intent = 'login' | 'signup' | 'reset';
+type Intent = 'login' | 'signup';
 
+/**
+ * OTP-ONLY LOGIN (as of 2026-05-03)
+ *
+ * Flow:
+ *   1. User enters 10-digit mobile (+ name if signing up).
+ *   2. POST /auth/send-otp           \u2192 backend stores OTP, returns demo_otp in dev.
+ *   3. User enters 6-digit OTP.
+ *   4. POST /auth/verify-otp        \u2192 backend returns JWT + user.
+ *   5. Webapp saves JWT \u2192 /dashboard.
+ *
+ * No passcode screen. JWT is valid 30 days. On token expiry the user is
+ * bounced back here.
+ */
 export default function LoginInner() {
   const router = useRouter();
-  const search = useSearchParams();
   const { loginWithOtp } = useAuth();
 
   const [intent, setIntent] = useState<Intent>('login');
@@ -26,52 +38,19 @@ export default function LoginInner() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  useEffect(() => {
-    const preset = search?.get('reset') || '';
-    if (preset.length === 10 && step === 'mobile' && !busy) {
-      setMobile(preset);
-      setIntent('reset');
-      (async () => {
-        setBusy(true);
-        try {
-          const r = await sendOtp(preset, 'reset');
-          setDemoOtp(r?.demo_otp || null);
-          setStep('otp');
-        } catch (e: any) {
-          setErr(e?.message || 'Could not start reset');
-        } finally {
-          setBusy(false);
-        }
-      })();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search]);
-
   const sanitizeMobile = (v: string) => v.replace(/[^0-9]/g, '').slice(0, 10);
 
-  const handleContinue = async () => {
+  const handleSendOtp = async () => {
     setErr(null);
     if (mobile.length !== 10) { setErr('Enter a valid 10-digit mobile.'); return; }
+    if (intent === 'signup' && !name.trim()) { setErr('Please enter your name to sign up.'); return; }
     setBusy(true);
     try {
-      if (intent === 'signup') {
-        if (!name.trim()) { setErr('Please enter your name to sign up.'); return; }
-        const r = await sendOtp(mobile, 'signup', name.trim());
-        setDemoOtp(r?.demo_otp || null);
-        setStep('otp');
-        return;
-      }
-      const has = await checkHasPasscode(mobile);
-      if (has === null) { setErr("Couldn't reach server. Please try again."); return; }
-      if (has) {
-        router.replace(`/passcode?mode=login&mobile=${encodeURIComponent(mobile)}`);
-        return;
-      }
-      const r = await sendOtp(mobile, 'login');
+      const r = await sendOtp(mobile, intent, intent === 'signup' ? name.trim() : undefined);
       setDemoOtp(r?.demo_otp || null);
       setStep('otp');
     } catch (e: any) {
-      setErr(e?.message || "Couldn't continue.");
+      setErr(e?.message || "Couldn't send OTP.");
     } finally {
       setBusy(false);
     }
@@ -80,22 +59,23 @@ export default function LoginInner() {
   const handleVerify = async () => {
     setErr(null);
     if (otp.length < 4) { setErr('Enter the OTP.'); return; }
-    if (intent === 'reset') {
-      router.replace(`/passcode?mode=reset&mobile=${encodeURIComponent(mobile)}&otp=${encodeURIComponent(otp)}`);
-      return;
-    }
     setBusy(true);
     try {
-      const { hasPasscode } = await loginWithOtp(mobile, otp);
-      if (!hasPasscode) {
-        router.replace(`/passcode?mode=create&redirect=${encodeURIComponent('/dashboard')}`);
-        return;
-      }
+      await loginWithOtp(mobile, otp);
       router.replace('/dashboard');
     } catch (e: any) {
       setErr(e?.message || 'OTP verification failed.');
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleResendOtp = async () => {
+    try {
+      const r = await sendOtp(mobile, intent, intent === 'signup' ? name.trim() : undefined);
+      setDemoOtp(r?.demo_otp || null);
+    } catch (e: any) {
+      setErr(e?.message || 'Resend failed.');
     }
   };
 
@@ -146,7 +126,9 @@ export default function LoginInner() {
               )}
 
               <div className="flex gap-2">
-                <div className="flex h-12 items-center rounded-xl border-2 border-border bg-bg-alt px-3 text-sm font-bold">+91</div>
+                <div className="flex h-12 items-center rounded-xl border-2 border-border bg-bg-alt px-3 text-sm font-bold">
+                  +91
+                </div>
                 <Input
                   inputMode="numeric"
                   placeholder="10-digit mobile"
@@ -158,28 +140,26 @@ export default function LoginInner() {
 
               {err && <div className="mt-3 text-xs font-semibold text-risk-high">{err}</div>}
 
-              <Button className="mt-4 w-full" loading={busy} onClick={handleContinue} size="lg">
-                Continue
+              <Button className="mt-4 w-full" loading={busy} onClick={handleSendOtp} size="lg">
+                Send OTP
               </Button>
 
               <div className="mt-4 flex items-center gap-2 rounded-xl bg-primary/5 px-3 py-2 text-xs text-text-secondary">
                 <Shield size={14} className="shrink-0 text-primary" />
-                {intent === 'signup'
-                  ? "We'll send a 6-digit OTP to verify your number."
-                  : "If you already have a passcode, you'll go straight to the passcode screen."}
+                We&apos;ll send a 6-digit OTP to verify your number. Valid for 5 minutes.
               </div>
             </>
           ) : (
             <>
               <div className="mb-4 flex items-center gap-3">
                 <button
-                  onClick={() => { setStep('mobile'); setOtp(''); setDemoOtp(null); if (intent === 'reset') setIntent('login'); }}
+                  onClick={() => { setStep('mobile'); setOtp(''); setDemoOtp(null); }}
                   className="flex h-9 w-9 items-center justify-center rounded-full bg-bg-alt text-text-secondary hover:text-text-primary"
                 >
                   <ChevronLeft size={18} />
                 </button>
                 <div>
-                  <div className="text-lg font-bold">{intent === 'reset' ? 'Reset passcode' : 'Verify OTP'}</div>
+                  <div className="text-lg font-bold">Verify OTP</div>
                   <div className="text-xs text-text-secondary">Sent to +91 {mobile}</div>
                 </div>
               </div>
@@ -203,10 +183,11 @@ export default function LoginInner() {
               {err && <div className="mb-2 text-xs font-semibold text-risk-high">{err}</div>}
 
               <Button onClick={handleVerify} loading={busy} className="w-full" size="lg">
-                {intent === 'reset' ? 'Continue' : 'Verify & continue'}
+                Verify &amp; continue
               </Button>
+
               <button
-                onClick={() => (intent === 'reset' ? sendOtp(mobile, 'reset').then((r) => setDemoOtp(r?.demo_otp || null)) : handleContinue())}
+                onClick={handleResendOtp}
                 className="mt-3 w-full text-sm font-bold text-primary hover:underline"
               >
                 Resend OTP

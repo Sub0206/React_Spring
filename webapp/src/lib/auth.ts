@@ -11,57 +11,33 @@ export type User = {
   subscription_status?: string | null;
 };
 
-export type HasPasscode = boolean | null;
+/**
+ * OTP-ONLY AUTH (as of 2026-05-03)
+ * The web app authenticates users via a two-step OTP flow:
+ *   1. sendOtp(mobile, 'login'|'signup')  → backend stores an OTP and (in demo) returns it in the response
+ *   2. verifyOtp(mobile, otp)             → backend returns JWT + user payload
+ *
+ * JWT is valid for 30 days. When the token expires, the user is bounced back
+ * to /login and must request a new OTP. No passcode fallback exists.
+ */
 
-/** Probe whether a mobile has a server-side passcode. Returns null on network error. */
-export async function checkHasPasscode(mobile: string): Promise<HasPasscode> {
-  try {
-    const r = await api<{ has_passcode: boolean }>(
-      `/auth/has-passcode?mobile=${encodeURIComponent(mobile)}`,
-      { auth: false }
-    );
-    return !!r.has_passcode;
-  } catch {
-    return null;
-  }
-}
-
-export async function sendOtp(mobile: string, purpose: 'signup' | 'login' | 'reset', name?: string) {
-  return api<{ demo_otp?: string }>('/auth/send-otp', {
-    method: 'POST',
-    auth: false,
-    body: { mobile, purpose, name },
-  });
-}
-
-export async function verifyOtp(mobile: string, otp: string) {
-  return api<{ access_token: string; user: User; has_passcode?: boolean }>(
-    '/auth/verify-otp',
-    { method: 'POST', auth: false, body: { mobile, otp } }
+export async function sendOtp(
+  mobile: string,
+  purpose: 'signup' | 'login' = 'login',
+  name?: string,
+) {
+  return api<{ ok: boolean; mobile: string; demo_otp?: string; message?: string }>(
+    '/auth/send-otp',
+    { method: 'POST', auth: false, body: { mobile, purpose, name } },
   );
 }
 
-export async function passcodeLogin(mobile: string, passcode: string) {
-  return api<{ access_token: string; user: User }>('/auth/passcode-login', {
-    method: 'POST',
-    auth: false,
-    body: { mobile, passcode },
-  });
-}
-
-export async function setServerPasscode(passcode: string) {
-  return api<{ ok: boolean; has_passcode: boolean }>('/auth/set-passcode', {
-    method: 'POST',
-    body: { passcode },
-  });
-}
-
-export async function resetPasscode(mobile: string, otp: string, passcode: string) {
-  return api<{ access_token: string; user: User }>('/auth/reset-passcode', {
-    method: 'POST',
-    auth: false,
-    body: { mobile, otp, passcode },
-  });
+export async function verifyOtp(mobile: string, otp: string) {
+  // `has_passcode` is a deprecated always-false field kept for backward compat.
+  return api<{ access_token: string; user: User; has_passcode?: boolean }>(
+    '/auth/verify-otp',
+    { method: 'POST', auth: false, body: { mobile, otp } },
+  );
 }
 
 export async function me() {

@@ -1,7 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect } from "react";
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as Linking from "expo-linking";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { AuthProvider, useAuth } from "../src/auth";
 import { DialogProvider } from "../src/dialog";
 import { I18nProvider } from "../src/i18n";
@@ -10,16 +9,23 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { StatusBar } from "expo-status-bar";
 import { Colors } from "../src/theme";
 import { ThemeProvider, useTheme } from "../src/themeContext";
-import { checkHasPasscode } from "../src/passcode";
 import { View, ActivityIndicator } from "react-native";
 
+/**
+ * OTP-ONLY auth gate (2026-05-03).
+ *
+ *  • unauthenticated → /index (the mobile+OTP login screen)
+ *  • authenticated   → (tabs)/dashboard
+ *
+ * No passcode routing, no session-unlock gate, no biometric. The JWT
+ * stored in SecureStore (30 day lifetime) is the single source of truth.
+ */
 function AuthGate() {
-  const { user, loading, sessionUnlocked, googleExchange } = useAuth();
+  const { user, loading, googleExchange } = useAuth();
   const segments = useSegments();
   const router = useRouter();
-  const [hasServerPasscode, setHasServerPasscode] = useState<boolean | null>(null);
 
-  // Handle Emergent Google auth return with #session_id= in URL hash (web preview)
+  // Handle Emergent Google auth return (#session_id=… on the web preview)
   useEffect(() => {
     (async () => {
       try {
@@ -46,73 +52,19 @@ function AuthGate() {
     })();
   }, []);
 
-  // Re-check passcode requirement whenever the user changes.
-  // Source of truth = server (`/auth/has-passcode`). The AppState-driven
-  // re-lock (and the actual sessionUnlocked flag) live in AuthProvider so
-  // they're proper React state and trigger re-renders here.
-  // `hasServerPasscode` tri-state: true | false | null (unknown / network error).
-  // While null we DO NOT route — better to wait than to push the user into the
-  // wrong screen because of a transient connectivity blip on cold start.
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (!user) {
-        setHasServerPasscode(false);
-        return;
-      }
-      // Retry up to 3× if the call returns null (network blip).
-      for (let attempt = 0; attempt < 3 && !cancelled; attempt++) {
-        const has = await checkHasPasscode(user.mobile);
-        if (cancelled) return;
-        if (has !== null) {
-          setHasServerPasscode(has);
-          return;
-        }
-        // Backoff before retrying
-        await new Promise((res) => setTimeout(res, 800 * (attempt + 1)));
-      }
-      // After 3 failed attempts we still don't know. Leave `hasServerPasscode`
-      // as null so the AuthGate stays on the loading state. The user can pull
-      // to refresh / re-open the app to retry.
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [user]);
-
-  // Derived routing decisions — pure, no side effects, no race conditions.
-  const needsPasscode = !!user && hasServerPasscode === true && !sessionUnlocked;
-  const mustCreatePasscode = !!user && hasServerPasscode === false;
-
-  useEffect(() => {
-    if (loading || hasServerPasscode === null) return;
+    if (loading) return;
     const cur = segments[0] || "";
     const inAuth = cur === "" || cur === "index";
     const onOnboarding = cur === "onboarding";
-    const onPasscode = cur === "passcode";
-
-    // Note: /passcode is public for `mode=login` and `mode=reset` (used as
-    // a step in the un-authenticated 2-step login flow). We therefore allow
-    // unauthenticated users to stay on the passcode screen.
-    if (!user && !inAuth && !onOnboarding && !onPasscode) {
+    if (!user && !inAuth && !onOnboarding) {
       router.replace("/");
-    } else if (user && needsPasscode && !onPasscode) {
-      router.replace({ pathname: "/passcode", params: { mode: "verify" } } as any);
-    } else if (user && mustCreatePasscode && !onPasscode) {
-      // First-time / no-passcode-yet user — force them to set one before
-      // anything else.
-      router.replace({ pathname: "/passcode", params: { mode: "create" } } as any);
-    } else if (user && !needsPasscode && !mustCreatePasscode && (inAuth || onOnboarding || onPasscode)) {
-      // Authenticated + unlocked + has-passcode → leave the auth surface and
-      // land on the dashboard. This includes the case where the user has just
-      // typed their passcode on /passcode?mode=login or just confirmed a new
-      // passcode on /passcode?mode=create — without this branch they'd stay
-      // stuck on the passcode screen.
+    } else if (user && (inAuth || onOnboarding)) {
       router.replace("/(tabs)/dashboard");
     }
-  }, [user, loading, segments, needsPasscode, mustCreatePasscode, hasServerPasscode]);
+  }, [user, loading, segments]);
 
-  if (loading || (user && hasServerPasscode === null)) {
+  if (loading) {
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: Colors.bg }}>
         <ActivityIndicator size="large" color={Colors.primary} />
@@ -136,11 +88,9 @@ function AuthGate() {
       <Stack.Screen name="settings/audit" options={{ presentation: "card" }} />
       <Stack.Screen name="settings/help" options={{ presentation: "card" }} />
       <Stack.Screen name="settings/appearance" options={{ presentation: "card" }} />
-      <Stack.Screen name="settings/security" options={{ presentation: "card" }} />
       <Stack.Screen name="subscription" options={{ presentation: "card" }} />
       <Stack.Screen name="overdue" options={{ presentation: "card" }} />
       <Stack.Screen name="notifications" options={{ presentation: "card" }} />
-      <Stack.Screen name="passcode" options={{ presentation: "card", gestureEnabled: false }} />
       <Stack.Screen name="assistant" options={{ presentation: "card" }} />
     </Stack>
   );

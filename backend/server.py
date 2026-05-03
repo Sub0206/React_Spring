@@ -98,21 +98,9 @@ class GoogleAuthRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     user: UserPublic
-    has_passcode: bool = False  # so the client knows whether to redirect to "set passcode" after OTP
-
-class PasscodeLoginRequest(BaseModel):
-    mobile: str
-    passcode: str  # 4 digits
-
-class SetPasscodeRequest(BaseModel):
-    passcode: str  # 4 digits — set by an authenticated user
-
-class ResetPasscodeRequest(BaseModel):
-    """OTP-driven reset: the user proves ownership of the mobile via an active OTP record
-    (purpose='reset') and supplies a new passcode in the same call."""
-    mobile: str
-    otp: str
-    passcode: str
+    # `has_passcode` is kept as a deprecated-always-false field for backward compatibility
+    # with any old mobile/web build still in the field. Will be removed in a future version.
+    has_passcode: bool = False
 
 class ClientModel(BaseModel):
     client_id: str
@@ -526,159 +514,14 @@ async def auth_verify_otp(body: VerifyOtpRequest):
     token = create_access_token(user["user_id"])
     public = {k: v for k, v in user.items() if k not in ("password_hash", "passcode_hash", "mobile_verified")}
     public.setdefault("email", None)
-    has_pc = bool(user.get("passcode_hash"))
-    return TokenResponse(access_token=token, user=UserPublic(**public), has_passcode=has_pc)
+    return TokenResponse(access_token=token, user=UserPublic(**public), has_passcode=False)
 
 
-# ----------------- Passcode auth (server-side) -----------------
-
-# In-memory rate limiter for passcode-login.
-# Rule: 5 failed attempts within the window → lock the mobile for 5 minutes.
-# A success resets the counter. Using an in-process dict is fine for single-node
-# preview; swap to Redis when horizontally scaled.
-_PASSCODE_FAIL_WINDOW_S = 5 * 60      # 5 min sliding window
-_PASSCODE_MAX_FAILS = 5
-_PASSCODE_LOCKOUT_S = 5 * 60          # 5 min lockout after threshold
-_passcode_fails: dict[str, dict] = {}  # mobile → {"count":int, "first_at":ts, "locked_until":ts}
-
-
-def _passcode_check_rate_limit(mobile: str) -> None:
-    """Raise 429 if the mobile is currently locked out."""
-    rec = _passcode_fails.get(mobile)
-    if not rec:
-        return
-    now = time.time()
-    locked = rec.get("locked_until", 0)
-    if locked > now:
-        retry_in = int(locked - now)
-        raise HTTPException(
-            status_code=429,
-            detail=f"Too many wrong attempts. Try again in {retry_in // 60 + 1} minute(s).",
-            headers={"Retry-After": str(retry_in)},
-        )
-
-
-def _passcode_note_fail(mobile: str) -> None:
-    now = time.time()
-    rec = _passcode_fails.get(mobile) or {"count": 0, "first_at": now, "locked_until": 0}
-    # Reset the sliding window if the first fail is older than the window.
-    if now - rec["first_at"] > _PASSCODE_FAIL_WINDOW_S:
-        rec = {"count": 0, "first_at": now, "locked_until": 0}
-    rec["count"] += 1
-    if rec["count"] >= _PASSCODE_MAX_FAILS:
-        rec["locked_until"] = now + _PASSCODE_LOCKOUT_S
-    _passcode_fails[mobile] = rec
-
-
-def _passcode_note_success(mobile: str) -> None:
-    _passcode_fails.pop(mobile, None)
-
-
-@api.get("/auth/has-passcode")
-async def auth_has_passcode(mobile: str):
-    """Public probe: does this mobile have an account with a server-side passcode?
-    The frontend calls this BEFORE deciding between the passcode screen and OTP.
-    Always returns 200 (no enumeration leak — `false` covers both 'no account' and
-    'account but no passcode set yet')."""
-    m = _normalize_mobile(mobile)
-    if len(m) != 10:
-        return {"mobile": m, "has_passcode": False}
-    user = await db.users.find_one({"mobile": m}, {"_id": 0, "passcode_hash": 1})
-    return {"mobile": m, "has_passcode": bool(user and user.get("passcode_hash"))}
-
-
-@api.post("/auth/passcode-login", response_model=TokenResponse)
-async def auth_passcode_login(body: PasscodeLoginRequest):
-    """Returning users sign in with mobile + 4-digit passcode (no OTP).
-
-    Rate-limited: 5 failed attempts in 5 minutes → 5-minute lockout.
-    A successful login resets the counter.
-    """
-    mobile = _normalize_mobile(body.mobile)
-    code = (body.passcode or "").strip()
-    if not (code.isdigit() and len(code) == 4):
-        raise HTTPException(400, "Passcode must be 4 digits.")
-    _passcode_check_rate_limit(mobile)
-    user = await db.users.find_one({"mobile": mobile}, {"_id": 0})
-    if not user or not user.get("passcode_hash"):
-        _passcode_note_fail(mobile)
-        # Generic message — don't leak which side failed.
-        raise HTTPException(401, "Invalid mobile or passcode.")
-    if not verify_password(code, user["passcode_hash"]):
-        _passcode_note_fail(mobile)
-        raise HTTPException(401, "Invalid mobile or passcode.")
-    _passcode_note_success(mobile)
-    token = create_access_token(user["user_id"])
-    public = {k: v for k, v in user.items() if k not in ("password_hash", "passcode_hash", "mobile_verified")}
-    public.setdefault("email", None)
-    return TokenResponse(access_token=token, user=UserPublic(**public), has_passcode=True)
-
-
-@api.post("/auth/set-passcode")
-async def auth_set_passcode(body: SetPasscodeRequest, current: UserPublic = Depends(get_current_user)):
-    """Authenticated endpoint — used right after OTP login (first time) or when
-    the user resets/changes their passcode from Settings."""
-    code = (body.passcode or "").strip()
-    if not (code.isdigit() and len(code) == 4):
-        raise HTTPException(400, "Passcode must be 4 digits.")
-    h = hash_password(code)
-    await db.users.update_one(
-        {"user_id": current.user_id},
-        {"$set": {"passcode_hash": h, "passcode_set_at": datetime.now(timezone.utc)}},
-    )
-    return {"ok": True, "has_passcode": True}
-
-
-@api.post("/auth/verify-passcode")
-async def auth_verify_passcode(body: SetPasscodeRequest, current: UserPublic = Depends(get_current_user)):
-    """Authenticated check — used by the in-app resume lock (background→foreground).
-    Does NOT issue a new token; simply validates the passcode against the stored
-    hash for the currently-authenticated user."""
-    code = (body.passcode or "").strip()
-    if not (code.isdigit() and len(code) == 4):
-        raise HTTPException(400, "Passcode must be 4 digits.")
-    user = await db.users.find_one({"user_id": current.user_id}, {"_id": 0, "passcode_hash": 1})
-    if not user or not user.get("passcode_hash"):
-        raise HTTPException(404, "Passcode not set.")
-    if not verify_password(code, user["passcode_hash"]):
-        raise HTTPException(401, "Wrong passcode.")
-    return {"ok": True}
-
-
-@api.post("/auth/reset-passcode", response_model=TokenResponse)
-async def auth_reset_passcode(body: ResetPasscodeRequest):
-    """Forgot-passcode flow: user provides mobile + freshly issued OTP (purpose='reset')
-    + new passcode. We verify the OTP, store the new passcode hash, and issue a JWT
-    so the client can drop them straight on the dashboard."""
-    mobile = _normalize_mobile(body.mobile)
-    code = (body.passcode or "").strip()
-    if not (code.isdigit() and len(code) == 4):
-        raise HTTPException(400, "Passcode must be 4 digits.")
-    rec = await db.otps.find_one({"mobile": mobile, "scope": "auth"}, {"_id": 0})
-    if not rec or rec.get("purpose") != "reset":
-        raise HTTPException(400, "Reset OTP not found. Request a new one.")
-    expires_at = rec["expires_at"]
-    if isinstance(expires_at, str):
-        expires_at = datetime.fromisoformat(expires_at)
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    if expires_at < datetime.now(timezone.utc):
-        raise HTTPException(400, "OTP expired. Please request a new one.")
-    if rec["otp"] != body.otp.strip():
-        raise HTTPException(400, "Invalid OTP.")
-    user = await db.users.find_one({"mobile": mobile}, {"_id": 0})
-    if not user:
-        raise HTTPException(404, "No account found.")
-    h = hash_password(code)
-    await db.users.update_one(
-        {"user_id": user["user_id"]},
-        {"$set": {"passcode_hash": h, "passcode_set_at": datetime.now(timezone.utc)}},
-    )
-    await db.otps.delete_one({"mobile": mobile, "scope": "auth"})
-    token = create_access_token(user["user_id"])
-    public = {k: v for k, v in user.items() if k not in ("password_hash", "passcode_hash", "mobile_verified")}
-    public.setdefault("email", None)
-    return TokenResponse(access_token=token, user=UserPublic(**public), has_passcode=True)
+# ----------------- (Passcode auth REMOVED - OTP-only as of 2026-05-03) -----------------
+# All former endpoints (/auth/has-passcode, /auth/passcode-login, /auth/set-passcode,
+# /auth/verify-passcode, /auth/reset-passcode) have been deleted. Rate-limiter state
+# and PasscodeLoginRequest / SetPasscodeRequest / ResetPasscodeRequest models are gone.
+# Session lifetime is now governed ONLY by the JWT 30-day expiry issued at OTP verify.
 
 @api.post("/auth/google", response_model=TokenResponse)
 async def google_auth(body: GoogleAuthRequest):

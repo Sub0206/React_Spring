@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import {
   View,
   Text,
@@ -10,42 +10,29 @@ import {
   Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { Input, PrimaryButton } from "../src/ui";
 import { Colors, Radii, Shadows, Spacing, Brand } from "../src/theme";
 import { useAuth } from "../src/auth";
-import { checkHasPasscode } from "../src/passcode";
 import { useThemedStyles } from "../src/themeContext";
 
 /**
- * 2-step authentication flow (server-driven passcode):
+ * OTP-ONLY AUTH (2026-05-03).
  *
- *   Step 1 — Mobile entry
- *      ↓ (Continue)
- *      → GET /auth/has-passcode?mobile=…
+ *   Step 1 \u2014 Mobile entry (+ name if signing up).
+ *   Step 2 \u2014 OTP entry (6 digits).
+ *   \u2192 POST /auth/verify-otp \u2192 JWT stored (30 days) \u2192 /dashboard.
  *
- *   If has_passcode:
- *      → router.replace("/passcode?mode=login&mobile=…")     (no OTP)
- *
- *   Else:
- *      → Step 2 (OTP)
- *        ├─ Sign in:    purpose=login → verify-otp → if !has_passcode redirect
- *        │              to "/passcode?mode=create" so the user sets one
- *        ├─ Sign up:    purpose=signup → verify-otp → "/passcode?mode=create"
- *        └─ Reset flow: purpose=reset  → "/passcode?mode=reset&mobile=…&otp=…"
- *
- *  This screen never mixes OTP + passcode in the same flow, never falls back
- *  silently to OTP if passcode exists, and never trusts a local passcode hash.
+ * No passcode, no biometric. Expired/invalid token \u2192 back to this screen.
  */
 type Step = "mobile" | "otp";
-type Intent = "login" | "signup" | "reset";
+type Intent = "login" | "signup";
 
 export default function AuthScreen() {
   const styles = useScreenStyles();
   const { sendOtp, verifyOtp } = useAuth();
   const router = useRouter();
-  const params = useLocalSearchParams<{ reset?: string }>();
 
   const [intent, setIntent] = useState<Intent>("login");
   const [step, setStep] = useState<Step>("mobile");
@@ -57,116 +44,44 @@ export default function AuthScreen() {
 
   const sanitizeMobile = (v: string) => v.replace(/[^0-9]/g, "").slice(0, 10);
 
-  // Forgot-passcode entry-point: arrived here with ?reset=<mobile>
-  // Auto-trigger a reset OTP for that mobile.
-  useEffect(() => {
-    const presetMobile = (params.reset as string) || "";
-    if (presetMobile && presetMobile.length === 10 && step === "mobile" && !busy) {
-      setMobile(presetMobile);
-      setIntent("reset");
-      // small delay so the field shows the value before we move forward
-      const t = setTimeout(() => {
-        void handleSendReset(presetMobile);
-      }, 50);
-      return () => clearTimeout(t);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params.reset]);
-
-  const handleSendReset = async (mob: string) => {
-    setBusy(true);
-    try {
-      const res = await sendOtp(mob, "reset");
-      setDemoOtp(res?.demo_otp || null);
-      setStep("otp");
-    } catch (e: any) {
-      Alert.alert("Couldn't start reset", e.message || "Please try again.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // ---------- Step 1: Continue with mobile ----------
-  const handleContinue = async () => {
+  // ---------- Step 1: Send OTP ----------
+  const handleSendOtp = async () => {
     if (mobile.length !== 10) {
       Alert.alert("Invalid mobile", "Enter a 10-digit mobile number.");
       return;
     }
+    if (intent === "signup" && !name.trim()) {
+      Alert.alert("Name required", "Please enter your name to sign up.");
+      return;
+    }
     setBusy(true);
     try {
-      const has = await checkHasPasscode(mobile);
-      if (intent === "signup") {
-        // Sign-up path: validate name then send OTP regardless of passcode state.
-        if (!name.trim()) {
-          Alert.alert("Name required", "Please enter your name to sign up.");
-          setBusy(false);
-          return;
-        }
-        const res = await sendOtp(mobile, "signup", name.trim());
-        setDemoOtp(res?.demo_otp || null);
-        setStep("otp");
-        return;
-      }
-      // Sign-in path:
-      if (has === null) {
-        Alert.alert(
-          "Couldn't reach server",
-          "Please check your connection and try again."
-        );
-        setBusy(false);
-        return;
-      }
-      if (has === true) {
-        // Returning user with server-side passcode → go straight to passcode entry.
-        router.replace({ pathname: "/passcode", params: { mode: "login", mobile } } as any);
-        return;
-      }
-      // No passcode set → fall back to OTP login.
-      const res = await sendOtp(mobile, "login");
+      const res = await sendOtp(mobile, intent, intent === "signup" ? name.trim() : undefined);
       setDemoOtp(res?.demo_otp || null);
       setStep("otp");
     } catch (e: any) {
-      Alert.alert("Couldn't continue", e.message || "Please try again.");
+      Alert.alert("Couldn't send OTP", e?.message || "Please try again.");
     } finally {
       setBusy(false);
     }
   };
 
-  // ---------- Step 2: OTP verify (or reset) ----------
+  // ---------- Step 2: Verify OTP ----------
   const handleVerifyOtp = async () => {
     if (otp.length < 4) {
       Alert.alert("Enter OTP", "Please enter the 6-digit OTP.");
       return;
     }
-    if (intent === "reset") {
-      // Hand off to the passcode screen which will POST /auth/reset-passcode
-      // with mobile + otp + new passcode.
-      router.replace({
-        pathname: "/passcode",
-        params: { mode: "reset", mobile, otp },
-      } as any);
-      return;
-    }
     setBusy(true);
     try {
-      const { user, hasPasscode } = await verifyOtp(mobile, otp);
-      if (!hasPasscode) {
-        // First-time / no-passcode-yet user → MUST set a passcode now.
-        const redirect = !user.subscription_status ? "/subscribe" : "/(tabs)/dashboard";
-        router.replace({
-          pathname: "/passcode",
-          params: { mode: "create", redirect },
-        } as any);
-        return;
-      }
-      // Has passcode already (rare on this branch, but possible) → straight in.
+      const user = await verifyOtp(mobile, otp);
       if (!user.subscription_status) {
         router.replace("/subscribe");
       } else {
         router.replace("/(tabs)/dashboard");
       }
     } catch (e: any) {
-      Alert.alert("Verification failed", e.message || "Invalid OTP.");
+      Alert.alert("Verification failed", e?.message || "Invalid OTP.");
     } finally {
       setBusy(false);
     }
@@ -176,7 +91,6 @@ export default function AuthScreen() {
     setStep("mobile");
     setOtp("");
     setDemoOtp(null);
-    if (intent === "reset") setIntent("login");
   };
 
   return (
@@ -251,15 +165,13 @@ export default function AuthScreen() {
 
                 <PrimaryButton
                   testID="continue-btn"
-                  title={intent === "signup" ? "Continue" : "Continue"}
-                  onPress={handleContinue}
+                  title="Send OTP"
+                  onPress={handleSendOtp}
                   loading={busy}
                 />
 
                 <Text style={styles.helper}>
-                  {intent === "signup"
-                    ? "We'll send a 6-digit OTP to verify your number."
-                    : "If you already have a passcode set, you'll go straight to the passcode screen."}
+                  We&apos;ll send a 6-digit OTP to verify your number. Valid for 5 minutes.
                 </Text>
               </>
             ) : (
@@ -273,9 +185,7 @@ export default function AuthScreen() {
                     <Ionicons name="chevron-back" size={18} color={Colors.textPrimary} />
                   </TouchableOpacity>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.otpTitle}>
-                      {intent === "reset" ? "Reset passcode" : "Verify OTP"}
-                    </Text>
+                    <Text style={styles.otpTitle}>Verify OTP</Text>
                     <Text style={styles.otpSub}>Sent to +91 {mobile}</Text>
                   </View>
                 </View>
@@ -301,16 +211,14 @@ export default function AuthScreen() {
 
                 <PrimaryButton
                   testID="verify-otp-btn"
-                  title={intent === "reset" ? "Continue" : "Verify & continue"}
+                  title="Verify & continue"
                   onPress={handleVerifyOtp}
                   loading={busy}
                 />
 
                 <TouchableOpacity
                   testID="resend-otp-btn"
-                  onPress={() =>
-                    intent === "reset" ? handleSendReset(mobile) : handleContinue()
-                  }
+                  onPress={handleSendOtp}
                   style={{ alignSelf: "center", marginTop: Spacing.md }}
                 >
                   <Text style={{ color: Colors.primary, fontWeight: "700" }}>Resend OTP</Text>

@@ -959,7 +959,7 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Server-side passcode auth (iteration 23)"
+    - "OTP-only auth refactor + passcode removal (iteration 27)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -2157,3 +2157,193 @@ frontend:
               seed by regex). Visually verified each scenario's frontend behaviour
               on 1440x900 via playwright screenshots (see /tmp/SC*.png). All rules
               match the spec.
+
+
+## Updated 2026-05-03 (Agent main): OTP-ONLY AUTH refactor (Iteration 27)
+
+### Summary
+Per explicit user mandate (P0), **passcode authentication has been COMPLETELY removed** from the FastAPI backend, the Next.js web app, and the Expo mobile app. The only supported sign-in flow is **Mobile → OTP → JWT (30-day)**. A Spring Boot scaffold has also been added under `/app/backend-spring/` for a future migration path, WITHOUT touching the running FastAPI backend.
+
+### Backend (FastAPI) changes in `/app/backend/server.py`
+- Deleted endpoints: `GET /auth/has-passcode`, `POST /auth/passcode-login`, `POST /auth/set-passcode`, `POST /auth/verify-passcode`, `POST /auth/reset-passcode`.
+- Deleted Pydantic models: `PasscodeLoginRequest`, `SetPasscodeRequest`, `ResetPasscodeRequest`.
+- Deleted rate-limiter state: `_passcode_fails`, `_passcode_check_rate_limit`, `_passcode_note_fail`, `_passcode_note_success`.
+- `TokenResponse.has_passcode` retained as a deprecated-always-false field for backward compatibility (to be dropped when client builds roll over).
+- Ran one-time cleanup on the Mongo `users` collection: `db.users.update_many({}, {"$unset": {"passcode_hash":"", "passcode_set_at":""}})`. Cleared 4 users.
+
+### Web app (/app/webapp) changes
+- Rewrote `src/providers/AuthProvider.tsx` — removed `sessionUnlocked`, `hasServerPasscode`, `loginWithPasscode`, `resetPasscode`. New API is `{ user, loading, loginWithOtp, logout, refresh }`.
+- Rewrote `src/lib/auth.ts` — removed `checkHasPasscode`, `passcodeLogin`, `setServerPasscode`, `resetPasscode`. Kept `sendOtp`, `verifyOtp`, `me`.
+- Rewrote `src/app/login/LoginInner.tsx` — single-path flow: mobile → Send OTP → OTP → Verify → `/dashboard`.
+- Rewrote `src/app/(app)/layout.tsx` — removed passcode gate, now just `!user → /login`.
+- Rewrote `src/app/page.tsx` — token present → `/dashboard`, else `/login`.
+- Deleted the entire `/passcode` route (`src/app/passcode/*`).
+- Build passes cleanly (`yarn build` → 11 pages, no TS errors).
+
+### Mobile app (/app/frontend) changes
+- Rewrote `src/auth.tsx` — stripped passcode helpers, dropped the `sessionUnlocked` context state and the `AppState`-driven re-lock, dropped `resetPasscode` / `passcodeLogin`. Context surface is now `{ user, loading, sendOtp, verifyOtp, googleExchange, logout, refresh }`.
+- Rewrote `app/_layout.tsx::AuthGate` — no more `hasServerPasscode`, no passcode routing. Just: unauth → `/` (login), auth → `/(tabs)/dashboard`.
+- Rewrote `app/index.tsx` — OTP-only flow (`Intent = "login" | "signup"`; no "reset" case any more).
+- Updated `(tabs)/profile.tsx` — removed "Security & Passcode" settings row.
+- Deleted files: `app/passcode.tsx`, `app/settings/security.tsx`, `src/passcode.ts`.
+
+### Spring Boot skeleton (NEW) `/app/backend-spring/`
+- Spring Boot 3.3.5 / Java 17 / Maven.
+- `pom.xml` — spring-boot-starter-web + starter-data-mongodb + jjwt 0.12.6 + validation + lombok.
+- `application.properties` — server on port 8080, reads `MONGO_URL` / `DB_NAME` / `JWT_SECRET` / `JWT_EXPIRY_SECONDS` / `OTP_EXPIRY_MINUTES` / `OTP_SEND_COOLDOWN` / `OTP_DEMO_MODE`.
+- `auth/JwtService.java` — HS256 issuer/parser mirroring FastAPI semantics (`sub = user_id`, 30-day TTL).
+- `auth/OtpService.java` — 6-digit OTP generate/persist/verify with 5-min expiry + 30-s send cooldown; upserts `users` rows on first verification; burns OTP after success.
+- `config/JwtAuthenticationFilter.java` — thin `OncePerRequestFilter` that populates `request.userId` when token is valid.
+- `controller/AuthController.java` — `POST /api/v1/auth/send-otp`, `POST /api/v1/auth/verify-otp`, `GET /api/v1/auth/me`.
+- `controller/ClientController.java` — sample `GET /api/v1/clients` scoped by `lender_id`.
+- `controller/LoanController.java` — sample `GET /api/v1/loans` scoped by `funded_by`.
+- `README.md` — full curl walkthrough + how to extend.
+- Scope is deliberately minimal — this is a FOUNDATION, not a full migration. Java/Maven are NOT installed in the container; the scaffold is verified by code review only.
+
+### Vercel deployment (NEW)
+- Logged in with user-supplied token (account: `subhashjjcet-5114`).
+- Linked to project `subhash3/lendiq-web`.
+- Env vars set: `LENDIQ_API_ORIGIN` (Production + Preview) and `NEXT_PUBLIC_APP_NAME`.
+- Deploy command: `vercel --prod --yes`.
+- Production URL: **https://lendiq-web-delta.vercel.app**
+- Verified end-to-end: `/api/v1/auth/send-otp` returns 200 with `demo_otp` → `/api/v1/auth/verify-otp` returns JWT → dashboard loads.
+
+### Documentation (4 new files)
+- `/app/docs/BACKEND_API.md` — endpoint reference (OTP, clients, risk-summary, loans, dashboard, notifications) + deprecation table.
+- `/app/docs/WEBAPP_SETUP.md` — stack, layout, env vars, auth flow, theming, local+Vercel run.
+- `/app/docs/MOBILE_APP_SETUP.md` — Expo stack, layout, env vars, auth flow, EAS build notes.
+- `/app/docs/ARCHITECTURE.md` — cross-platform diagram, risk classifier reference, Mongo schema contract, changelog.
+
+### Screenshots captured
+All 7 mandated screenshots are in `/tmp/`:
+- `WEB_01_login_mobile.png` — OTP-only login (mobile entry)
+- `WEB_02_login_otp.png` — OTP entry + demo banner
+- `WEB_03_dashboard.png` — dashboard (portfolio health 4/2/6/4)
+- `WEB_04_customers.png` — customers with colour-coded risk badges (Test seed filter)
+- `WEB_05_loans.png` — loans table with filter chips (All 43 / On Track 29 / Mild 3 / At Risk 6 / Completed 4)
+- `WEB_06_loan_detail.png` — Test High Risk Loan with Mark Paid + Reschedule on ALL 4 unpaid EMIs
+- `WEB_07_new_loan_modal.png` — red HIGH warning modal with 4 overdue, ₹20K, 4 missed months
+- `WEB_08_notifications.png` — "All caught up" empty state + filter pills
+- `VERCEL_01_login.png` — Live Vercel OTP login page
+- `VERCEL_02_dashboard.png` — Live Vercel dashboard post-OTP
+
+backend:
+  - task: "OTP-only auth refactor + passcode removal (iteration 27)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Iteration-27 regression — 18/19 PASS on live preview backend
+          (https://lending-hub-63.preview.emergentagent.com) via /api/v1/* paths
+          (middleware rewrites to /api/*). Test script: /app/backend_test.py.
+
+          1. PASSCODE ENDPOINTS GONE (5/5 PASS):
+             • GET  /api/v1/auth/has-passcode?mobile=9876543210       → 404 {"detail":"Not Found"}
+             • POST /api/v1/auth/passcode-login                        → 404
+             • POST /api/v1/auth/set-passcode (Bearer)                 → 404
+             • POST /api/v1/auth/verify-passcode (Bearer)              → 404
+             • POST /api/v1/auth/reset-passcode                        → 404
+             Confirmed endpoints + Pydantic models deleted from server.py.
+
+          2. OTP-ONLY AUTH END-TO-END (3/3 PASS):
+             • POST /api/v1/auth/send-otp {mobile:"9876543210", purpose:"login"} →
+               200 {"ok":true, "mobile":"9876543210", "demo_otp":"140193",
+               "message":"OTP sent (mock). Valid 5 minutes."} — demo_otp matches
+               regex ^\d{6}$.
+             • POST /api/v1/auth/verify-otp → 200 with access_token (JWT, len=163),
+               user={user_id:"user_77a19af2901f", mobile:"9876543210",
+               name:"Demo Lender", role:"lender", email:null, picture:null,
+               subscription_plan:"starter", subscription_status:"active",
+               subscription_expires_at, created_at}, has_passcode:false
+               (deprecated-always-false field present as expected).
+             • GET /api/v1/auth/me (Bearer) → 200 with same user_id/mobile/role.
+
+          3. CORE ENDPOINTS REGRESSION (8/9 PASS):
+             • GET /api/v1/clients → 200, 18 clients (>=13 ✓), every client carries
+               risk_kind ∈ {on_track, overdue_mild, overdue_high}, risk_overdue_count,
+               risk_overdue_amount. Kinds seen: [on_track, overdue_high, overdue_mild].
+             • GET /api/v1/clients/cli_seed_006/risk-summary → kind=overdue_high,
+               overdue_count=2, active_loan_count=1, overdue_loans[0].loan_id=
+               "loan_seed_l7_rollback_79781f" (startswith "loan_seed_l7_" ✓).
+             • GET /api/v1/clients/cli_test_scenario_1_mild/risk-summary → kind=
+               overdue_mild, overdue_count=1.
+             • GET /api/v1/clients/cli_test_scenario_5_clean/risk-summary → kind=
+               on_track, overdue_count=0.
+             • GET /api/v1/loans → 200, 43 loans (>=40 ✓).
+             • GET /api/v1/loans/loan_test_scenario_2_high → 200, status=active,
+               repayment_schedule has exactly 3 unpaid EMIs.
+             • GET /api/v1/notifications → 200, JSON array (length 0).
+             • GET /api/v1/applications?status=pending → 200, JSON array (len 7).
+             • Minor (non-blocking): GET /api/v1/dashboard → 200, portfolio_health
+               present with all 5 required buckets on_track=4, overdue=8, at_risk=6,
+               completed=4, defaulted=1 (plus extra keys overdue_mild=2, overdue_high=6).
+               total_funded and active_loans present and correct. However the review
+               spec keys `overdue_emis` and `monthly_volume` are NOT in the response —
+               the backend returns the equivalent data under different names
+               (`overdue_count`, `overdue_amount`, `current_month_disbursed`,
+               `current_month_repaid`, `inflow_chart[]`, `outflow_chart[]`). This
+               naming discrepancy is PRE-EXISTING (not caused by the passcode removal
+               refactor) — /app/backend/server.py:3007-3021 has always returned these
+               key names. Dashboard is fully functional; only the key spelling in the
+               review brief is out of date.
+
+          4. UNAUTHORIZED ACCESS (2/2 PASS):
+             • GET /api/v1/clients (no Authorization)   → 401 "Missing or invalid auth token".
+             • GET /api/v1/dashboard (no Authorization) → 401 "Missing or invalid auth token".
+
+          Conclusion: OTP-only auth refactor is working end-to-end. All 5 passcode
+          endpoints are fully removed. No auth-routing regressions introduced.
+          The single failed assertion is a naming mismatch in the review spec, not
+          a functional bug; no backend fix required unless renaming is desired.
+
+          No backend code was modified during testing.
+      - working: true
+        agent: "main"
+        comment: |
+          Stripped all passcode code from FastAPI: 5 endpoints removed, 3 Pydantic
+          models deleted, rate-limiter state wiped, DB fields cleared. Verified:
+            curl /auth/has-passcode     → 404 (gone)
+            curl /auth/passcode-login   → 404 (gone)
+            curl /auth/send-otp         → 200 with demo_otp
+            curl /auth/verify-otp       → 200 with JWT + user
+            curl /auth/me (Bearer JWT)  → 200 with user
+          PLEASE regression-test every OTHER endpoint to confirm the passcode
+          removal didn't accidentally break anything:
+            GET  /clients                (should still work, lender-scoped)
+            GET  /clients/{id}/risk-summary
+            GET  /loans
+            POST /loans/{id}/pay/{month}
+            GET  /dashboard
+            GET  /notifications
+            POST /notifications/mark-all-read
+          Known changes:
+            • Former `has_passcode` response field is now always `false`
+              (deprecated) but still present. OK to assert that.
+            • Users collection had passcode_hash + passcode_set_at unset on all
+              existing docs.
+            • No rate-limit on verify-otp yet (future work).
+
+frontend:
+  - task: "OTP-only webapp + mobile app (iteration 27)"
+    implemented: true
+    working: true
+    file: "/app/webapp/src/*, /app/frontend/app/*, /app/frontend/src/*"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Webapp build passes, screenshots confirm full OTP round-trip on both
+          localhost:3002 AND the live Vercel URL. Mobile app bundle compiles
+          cleanly after deleting passcode.tsx / security.tsx / src/passcode.ts.
+          No mixed flows, no `checkHasPasscode` calls anywhere in source.
+          User-visible behaviour: enter mobile → receive demo OTP banner →
+          enter 6 digits → dashboard. Token persists 30 days.

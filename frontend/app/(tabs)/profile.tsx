@@ -105,7 +105,6 @@ export default function Profile() {
 
           {[
             { icon: "color-palette", label: "Appearance",     route: "/settings/appearance", color: Colors.accent,  sub: "Light, Dark or Match system" },
-            { icon: "shield-checkmark", label: "Security & Passcode", route: "/settings/security", color: Colors.primary, sub: "Passcode & biometric unlock" },
             { icon: "sparkles", label: "AI Assistant", route: "/assistant", color: Colors.info, sub: "Ask about your live portfolio" },
             { icon: "bar-chart", label: "Audit & Reports", route: "/settings/audit", color: Colors.warning, sub: "Inflow / outflow by month & year" },
             { icon: "chatbubbles", label: "Help & Support", route: "/settings/help", color: Colors.primary, sub: "Chat with our AI guide" },
