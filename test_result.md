@@ -2096,3 +2096,64 @@ frontend:
           Screenshots on disk: /tmp/webapp_*.png (loans_list, loans_overdue_mild,
           loans_at_risk, loan_detail, customers_risk, risk_modal_arjun,
           new_loan_filled_arjun, notifications).
+
+
+## Updated 2026-05-03 (Agent main): Repayment-action rule tightening + 5 seeded P0 scenarios
+
+### Action-button rules now STRICTLY enforced in `/app/webapp/src/app/(app)/loans/[id]/page.tsx`
+| Badge | Mark Paid | Reschedule | Undo |
+|---|---|---|---|
+| 🟢 PAID        | ❌ | ❌ | **❌ removed** |
+| 🟡 OVERDUE MILD | ✅ | ✅ | — |
+| 🔴 AT RISK      | ✅ | ✅ | — |
+| 🔵 DUE NOW      | ✅ | ✅ | — |
+| ⚪ FUTURE      | ❌ | ❌ | — |
+
+Key changes:
+- Bucket is now computed off the DUE-DATE window, not `now` — a row is `current` if `monthStart ≤ due < monthEnd`, regardless of whether that date is past or future within the current month. This ensures a "Due this month" row is actionable, matching the product rule.
+- Undo-payment UI was completely removed. The backend endpoint still exists for audit/admin use.
+- Status label split: `Overdue (this month)` (past-due, current month) vs `Due this month` (upcoming, current month) vs `Upcoming` (future month) vs `Overdue (prior month)` (past month, AT RISK).
+
+### 5 deterministic scenarios seeded via `/app/webapp/scripts/seed_test_scenarios.py`
+Running the script is idempotent — deletes old `cli_test_scenario_*` + `loan_test_scenario_*` and re-inserts.
+
+| # | Client (client_id) | Schedule shape | risk-summary kind | Verified on Web |
+|---|---|---|---|---|
+| 1 | `cli_test_scenario_1_mild`      | [paid(-1mo), unpaid(this-mo-1st), future(+1mo)]              | overdue_mild | Loan detail shows 🟡 OVERDUE (MILD), Mark Paid+Reschedule only on month 2 |
+| 2 | `cli_test_scenario_2_high`      | [unpaid(-2mo), unpaid(-1mo), unpaid(this-mo-1st)]            | overdue_high | Loan detail shows 🔴 AT RISK with Mark Paid+Reschedule on all 3 rows |
+| 3 | `cli_test_scenario_3_warning`   | [paid-late(-2mo), paid(-1mo), unpaid(this-mo-1st), future]   | overdue_mild | `/loans/new` → picking client triggers MILD modal: Active 1, Overdue 1, Amount ₹5K, Late payments (history) **1**, Missed months May 2026, Continue-anyway CTA |
+| 4 | `cli_test_scenario_4_high_loan` | [unpaid×4 spanning -3mo, -2mo, -1mo, this-mo]                | overdue_high | `/loans/new` → HIGH modal (red): 4 Overdue EMIs ₹20K, 4 missed months, "Loans with delays" list rendered, "I understand the risk, continue" CTA |
+| 5 | `cli_test_scenario_5_clean`     | All 3 EMIs paid, loan.status=completed                       | on_track      | Loan detail shows 🔵 COMPLETED, 100% progress, **no Undo buttons** anywhere |
+
+### Dashboard regression
+Re-issued portfolio_health with new scenarios: `{on_track: 4, overdue: 2, at_risk: 6, completed: 4, defaulted: 1}` — matches expected increments (Overdue bumped from 0 → 2 by scenarios 1+3, At Risk bumped from 4 → 6 by scenarios 2+4, Completed bumped from 3 → 4 by scenario 5).
+
+### Files touched
+- `/app/webapp/src/app/(app)/loans/[id]/page.tsx` — action rules + DUE-NOW status label
+- `/app/webapp/scripts/seed_test_scenarios.py` — new, idempotent seeder
+
+frontend:
+  - task: "Repayment action rules + seeded P0 scenarios (iteration 26)"
+    implemented: true
+    working: true
+    file: "/app/webapp/src/app/(app)/loans/[id]/page.tsx, /app/webapp/scripts/seed_test_scenarios.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Shipped both halves of the review requirement in a single pass:
+          (A) Action-button logic made strictly spec-compliant. Undo fully removed
+              from the UI. Actionable set of buckets is now {past, current}; only
+              future-month unpaid EMIs are locked. Status label split into
+              'Overdue (prior month)' / 'Overdue (this month)' / 'Due this month' /
+              'Upcoming' so the user can always tell at a glance WHY a row is
+              actionable.
+          (B) New seed script at /app/webapp/scripts/seed_test_scenarios.py creates
+              5 deterministic clients + loans covering MILD, HIGH, MILD-warning,
+              HIGH-warning, and CLEAN. Script is idempotent (re-runs wipe previous
+              seed by regex). Visually verified each scenario's frontend behaviour
+              on 1440x900 via playwright screenshots (see /tmp/SC*.png). All rules
+              match the spec.

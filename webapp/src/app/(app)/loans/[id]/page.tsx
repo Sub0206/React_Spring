@@ -76,17 +76,8 @@ export default function LoanDetailPage() {
     } finally { setBusy(null); }
   };
 
-  const handleUndoPay = async (month: number) => {
-    if (!loan) return;
-    if (!confirm(`Undo payment for month ${month}?`)) return;
-    setBusy(`undo-${month}`);
-    try {
-      const updated = await api<Loan>(`/loans/${loan.loan_id}/undo-pay/${month}`, { method: 'POST' });
-      setLoan(updated);
-    } catch (e: any) {
-      alert(e?.message || 'Undo failed');
-    } finally { setBusy(null); }
-  };
+  // NOTE: Undo-payment flow intentionally removed from the UI per product rule:
+  // "🟢 PAID → No actions, No Undo". The backend endpoint still exists for audit use.
 
   const submitReschedule = async () => {
     if (!loan || !reschedEntry || !reschedDate) return;
@@ -113,7 +104,6 @@ export default function LoanDetailPage() {
   }
 
   const progress = loan.total_repayment > 0 ? (loan.paid_amount / loan.total_repayment) * 100 : 0;
-  const now = Date.now();
   const monthStart = (() => { const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); return d.getTime(); })();
   const monthEnd = (() => { const d = new Date(); d.setMonth(d.getMonth() + 1, 1); d.setHours(0, 0, 0, 0); return d.getTime(); })();
 
@@ -189,29 +179,37 @@ export default function LoanDetailPage() {
               {loan.repayment_schedule.map((e) => {
                 const due = new Date(e.due_date).getTime();
                 const isPaid = e.status === 'paid';
-                const bucket: Bucket = isPaid
-                  ? (due >= monthStart && due < monthEnd ? 'current' : due < monthStart ? 'past' : 'future')
-                  : due < now
-                    ? (due < monthStart ? 'past' : 'current')
-                    : 'future';
 
-                // P0 rule: every unpaid EMI (past or current) must allow Mark Paid + Reschedule.
-                const isUnpaid = !isPaid;
+                // 3 buckets by DUE DATE (not by "now"):
+                //   past    = due < first of this month       → AT RISK if unpaid
+                //   current = first of this month ≤ due < first of next month → actionable (OVERDUE_MILD or DUE NOW)
+                //   future  = due ≥ first of next month       → UPCOMING, no actions
+                const bucket: Bucket =
+                  due < monthStart ? 'past' : due < monthEnd ? 'current' : 'future';
+
+                // ACTION MATRIX (strictly per product spec):
+                //   🟢 PAID           → no actions (no Undo)
+                //   🟡 OVERDUE MILD   → Mark Paid + Reschedule
+                //   🔴 AT RISK        → Mark Paid + Reschedule
+                //   🔵 DUE NOW        → Mark Paid + Reschedule  (current month, not yet late but actionable)
+                //   ⚪ FUTURE         → no actions
                 const isLoanOpen = loan.status === 'active';
-                const canPay     = isUnpaid && isLoanOpen && bucket !== 'future';
-                const canResched = isUnpaid && isLoanOpen && bucket !== 'future';
-                const canUndo    = isPaid && loan.status !== 'completed';
+                const canPay     = !isPaid && isLoanOpen && bucket !== 'future';
+                const canResched = !isPaid && isLoanOpen && bucket !== 'future';
 
-                const statusLabel =
-                  isPaid ? (e.was_late ? 'Paid (late)' : 'Paid')
-                  : bucket === 'past'    ? 'Overdue (prior month)'
-                  : bucket === 'current' ? 'Overdue (this month)'
-                  : 'Upcoming';
-                const statusColor =
-                  isPaid ? 'text-success'
-                  : bucket === 'past' ? 'text-risk-high'
-                  : bucket === 'current' ? 'text-risk-mild'
-                  : 'text-text-muted';
+                let statusLabel = 'Upcoming';
+                let statusColor = 'text-text-muted';
+                if (isPaid) {
+                  statusLabel = e.was_late ? 'Paid (late)' : 'Paid';
+                  statusColor = 'text-success';
+                } else if (bucket === 'past') {
+                  statusLabel = 'Overdue (prior month)';
+                  statusColor = 'text-risk-high';
+                } else if (bucket === 'current') {
+                  // Distinguish "already-late this month" from "due later this month"
+                  statusLabel = due < Date.now() ? 'Overdue (this month)' : 'Due this month';
+                  statusColor = due < Date.now() ? 'text-risk-mild' : 'text-primary';
+                }
 
                 return (
                   <tr key={e.month} className={cn(
@@ -247,16 +245,7 @@ export default function LoanDetailPage() {
                             Reschedule
                           </button>
                         )}
-                        {canUndo && (
-                          <button
-                            onClick={() => handleUndoPay(e.month)}
-                            disabled={busy === `undo-${e.month}`}
-                            className="rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-bold text-text-primary hover:bg-surface-alt"
-                          >
-                            Undo
-                          </button>
-                        )}
-                        {!canPay && !canResched && !canUndo && (
+                        {!canPay && !canResched && (
                           <span className="text-xs text-text-muted">—</span>
                         )}
                       </div>
