@@ -1739,3 +1739,58 @@ Full coverage of every auth path:
 - **Brute-force protection on `/auth/passcode-login`** still not implemented.
 - **Web app** — awaiting user go-ahead to start.
 
+
+## Updated 2026-05-03 (Agent main): Web App Iteration 1 + rate limiter
+
+### 1. Backend rate limiter on `/auth/passcode-login` — DONE
+- In-memory rate limiter (single-node; swap to Redis later). 5 wrong passcodes in a 5-minute sliding window → 5-minute lockout. Correct passcode resets the counter.
+- Verified: 5 wrong attempts return 401; 6th returns **429** with `Retry-After` header; correct login for a different mobile still works (`access_token` issued).
+
+### 2. Next.js 14 Web App — ITERATION 1 COMPLETE
+**Location**: `/app/webapp/` (brand new codebase; NOT mixed with the Expo mobile app).
+
+**Stack**: Next.js 14 App Router + TypeScript + Tailwind + lucide-react + recharts (installed, not yet wired). No Expo. No server rendering of the mobile app. Uses the **same `/api/v1/*` backend** via a rewrite in `next.config.mjs`.
+
+**Delivered in iteration 1**:
+- `package.json`, `next.config.mjs`, `tsconfig.json`, `tailwind.config.ts`, `postcss.config.mjs`, `.env.local`, `README.md`, `.gitignore`.
+- Theme: CSS variables wired into Tailwind tokens (`hsl(var(--primary))`, `bg`, `surface`, `border`, `text-*`, `success`, `warning`, `danger`, `risk-mild`, `risk-high` + soft / border variants). **Light & dark fully synced with mobile theme.ts** (same hex values).
+- `src/lib/api.ts` — JWT-aware fetch wrapper.
+- `src/lib/auth.ts` — has-passcode / send-otp / verify-otp / passcode-login / set-passcode / reset-passcode / me.
+- `src/lib/loanStatus.ts` — port of the mobile classifier (`on_track | overdue_mild | overdue_high | completed | defaulted`).
+- `src/lib/utils.ts` — `cn`, `inr`, `formatDate`, `initials`.
+- `src/providers/ThemeProvider.tsx` — light/dark/system, persisted to localStorage, toggles `.dark` on `<html>`.
+- `src/providers/AuthProvider.tsx` — `sessionUnlocked` + `hasServerPasscode` React state, token in localStorage, forces passcode verify on fresh load when user has a server-side passcode.
+- `src/components/ui/{Button,Input,Card}.tsx` + `StatusBadge.tsx`.
+- `src/components/Sidebar.tsx` — persistent left sidebar (Dashboard / Loans / Applications / Customers / Notifications / Settings).
+- `src/components/Topbar.tsx` — search, theme toggle (Sun / Laptop / Moon), `NotificationBell`, profile dropdown with sign-out.
+- `src/components/NotificationBell.tsx` — badge with `9+` cap, bump animation only when count grows; polls every 30 s + `visibilitychange`.
+- Routes: `/login` (2-step), `/passcode` (login / create / confirm / verify / reset modes), `/dashboard` (full KPI cards + Portfolio Health tiles + Recent transactions + At-a-glance sidebar), stubs for `/loans`, `/applications`, `/customers`, `/notifications`, and a working `/settings` theme switcher.
+- Suspense-safe `useSearchParams()` wrapping on login + passcode pages.
+
+**Scripts**:
+```bash
+cd /app/webapp
+yarn install
+yarn dev       # http://localhost:3002
+yarn build     # prod build (verified clean)
+```
+
+The dev server proxies `/api/*` → `http://localhost:8001/api/*`. Inside the preview container, external access to port 3002 isn't exposed by default — user can expose it via Vercel / Netlify / any Node host for public preview.
+
+**Visually verified end-to-end** (1440×900, dark + light themes):
+- Login → Continue → Passcode → Dashboard renders with correct Portfolio Health split (On Track 4 / Overdue 0 / At Risk 4 / Completed 3).
+- Theme toggle flips every token live (tested Light & Dark & System).
+- Notification bell + sidebar + topbar + profile menu + sign-out all working.
+
+### Pending for Iteration 2 (web)
+- Loans table with filters (on_track / overdue_mild / overdue_high / completed), sorting, pagination.
+- Loan detail page with payment history + Mark Paid / Reschedule actions.
+- Customers searchable table.
+- Notifications stream page.
+- Applications queue.
+- Optional: bundle to `/app` route on port 3000 to replace Expo web output per the user's preference.
+
+### Still MOCKED / Deferred
+- Razorpay payments still **MOCKED**.
+- `server.py` modular refactor still deferred.
+

@@ -7,6 +7,7 @@ import asyncio
 import json
 import bcrypt
 import jwt as pyjwt
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional, Literal, Dict, Any, Tuple
@@ -526,6 +527,48 @@ async def auth_verify_otp(body: VerifyOtpRequest):
 
 # ----------------- Passcode auth (server-side) -----------------
 
+# In-memory rate limiter for passcode-login.
+# Rule: 5 failed attempts within the window → lock the mobile for 5 minutes.
+# A success resets the counter. Using an in-process dict is fine for single-node
+# preview; swap to Redis when horizontally scaled.
+_PASSCODE_FAIL_WINDOW_S = 5 * 60      # 5 min sliding window
+_PASSCODE_MAX_FAILS = 5
+_PASSCODE_LOCKOUT_S = 5 * 60          # 5 min lockout after threshold
+_passcode_fails: dict[str, dict] = {}  # mobile → {"count":int, "first_at":ts, "locked_until":ts}
+
+
+def _passcode_check_rate_limit(mobile: str) -> None:
+    """Raise 429 if the mobile is currently locked out."""
+    rec = _passcode_fails.get(mobile)
+    if not rec:
+        return
+    now = time.time()
+    locked = rec.get("locked_until", 0)
+    if locked > now:
+        retry_in = int(locked - now)
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many wrong attempts. Try again in {retry_in // 60 + 1} minute(s).",
+            headers={"Retry-After": str(retry_in)},
+        )
+
+
+def _passcode_note_fail(mobile: str) -> None:
+    now = time.time()
+    rec = _passcode_fails.get(mobile) or {"count": 0, "first_at": now, "locked_until": 0}
+    # Reset the sliding window if the first fail is older than the window.
+    if now - rec["first_at"] > _PASSCODE_FAIL_WINDOW_S:
+        rec = {"count": 0, "first_at": now, "locked_until": 0}
+    rec["count"] += 1
+    if rec["count"] >= _PASSCODE_MAX_FAILS:
+        rec["locked_until"] = now + _PASSCODE_LOCKOUT_S
+    _passcode_fails[mobile] = rec
+
+
+def _passcode_note_success(mobile: str) -> None:
+    _passcode_fails.pop(mobile, None)
+
+
 @api.get("/auth/has-passcode")
 async def auth_has_passcode(mobile: str):
     """Public probe: does this mobile have an account with a server-side passcode?
@@ -541,17 +584,25 @@ async def auth_has_passcode(mobile: str):
 
 @api.post("/auth/passcode-login", response_model=TokenResponse)
 async def auth_passcode_login(body: PasscodeLoginRequest):
-    """Returning users sign in with mobile + 4-digit passcode (no OTP)."""
+    """Returning users sign in with mobile + 4-digit passcode (no OTP).
+
+    Rate-limited: 5 failed attempts in 5 minutes → 5-minute lockout.
+    A successful login resets the counter.
+    """
     mobile = _normalize_mobile(body.mobile)
     code = (body.passcode or "").strip()
     if not (code.isdigit() and len(code) == 4):
         raise HTTPException(400, "Passcode must be 4 digits.")
+    _passcode_check_rate_limit(mobile)
     user = await db.users.find_one({"mobile": mobile}, {"_id": 0})
     if not user or not user.get("passcode_hash"):
+        _passcode_note_fail(mobile)
         # Generic message — don't leak which side failed.
         raise HTTPException(401, "Invalid mobile or passcode.")
     if not verify_password(code, user["passcode_hash"]):
+        _passcode_note_fail(mobile)
         raise HTTPException(401, "Invalid mobile or passcode.")
+    _passcode_note_success(mobile)
     token = create_access_token(user["user_id"])
     public = {k: v for k, v in user.items() if k not in ("password_hash", "passcode_hash", "mobile_verified")}
     public.setdefault("email", None)

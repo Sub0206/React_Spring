@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Shared CSS vars — light/dark synced with mobile theme.ts tokens. */
+:root {
+  --bg: 210 40% 98%;                 /* #F8FAFC */
+  --bg-alt: 210 40% 96%;             /* #F1F5F9 */
+  --surface: 0 0% 100%;              /* #FFFFFF */
+  --surface-alt: 220 33% 98%;        /* #FAFBFE */
+  --border: 214 32% 91%;             /* #E2E8F0 */
+  --border-light: 210 40% 96%;       /* #F1F5F9 */
+  --text-primary: 222 47% 11%;       /* #0F172A */
+  --text-secondary: 215 16% 37%;     /* #475569 */
+  --text-muted: 215 20% 65%;         /* #94A3B8 */
+  --primary: 226 71% 40%;            /* #1E40AF */
+  --primary-fg: 0 0% 100%;
+  --primary-soft: 214 95% 93%;       /* #DBEAFE */
+  --success: 160 84% 29%;            /* #059669 */
+  --success-soft: 152 76% 90%;       /* #D1FAE5 */
+  --warning: 27 96% 44%;             /* #D97706 */
+  --warning-soft: 48 96% 89%;        /* #FEF3C7 */
+  --danger: 0 73% 51%;               /* #DC2626 */
+  --danger-soft: 0 96% 94%;          /* #FEE2E2 */
+  --risk-mild: 34 73% 42%;           /* #B7791F */
+  --risk-mild-soft: 48 96% 89%;      /* #FEF3C7 */
+  --risk-mild-border: 39 83% 73%;    /* #F5C77E */
+  --risk-high: 3 63% 47%;            /* #C4362A */
+  --risk-high-soft: 0 96% 94%;       /* #FEE2E2 */
+  --risk-high-border: 3 85% 74%;     /* #F28C87 */
+}
+
+.dark {
+  --bg: 220 38% 8%;                  /* #0B1220 */
+  --bg-alt: 221 33% 13%;             /* #131C2E */
+  --surface: 221 37% 18%;            /* #1B273F */
+  --surface-alt: 221 30% 22%;        /* #243049 */
+  --border: 215 19% 27%;             /* #334155 */
+  --border-light: 221 25% 21%;       /* #263149 */
+  --text-primary: 210 40% 98%;       /* #F8FAFC */
+  --text-secondary: 214 27% 83%;     /* #CBD5E1 */
+  --text-muted: 215 20% 65%;         /* #94A3B8 */
+  --primary: 217 91% 60%;            /* #3B82F6 */
+  --primary-fg: 0 0% 100%;
+  --primary-soft: 212 41% 25%;       /* #1E3A5F */
+  --success: 160 84% 39%;            /* #10B981 */
+  --success-soft: 155 63% 14%;       /* #0B3F2E */
+  --warning: 42 100% 70%;            /* #FFD166 */
+  --warning-soft: 29 75% 27%;        /* #7C4A10 */
+  --danger: 0 100% 71%;              /* #FF6B6B */
+  --danger-soft: 0 54% 22%;          /* #5A1A1A */
+  --risk-mild: 42 100% 70%;          /* #FFD166 */
+  --risk-mild-soft: 34 60% 16%;      /* #3F2E10 */
+  --risk-mild-border: 40 68% 33%;    /* #8A6A1E */
+  --risk-high: 0 100% 71%;           /* #FF6B6B */
+  --risk-high-soft: 357 51% 18%;     /* #441718 */
+  --risk-high-border: 358 51% 37%;   /* #8F2F31 */
+}
+
+body {
+  @apply bg-bg text-text-primary antialiased;
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+* { scrollbar-width: thin; scrollbar-color: hsl(var(--border)) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background-color: hsl(var(--border)); border-radius: 999px; }
