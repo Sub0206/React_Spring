@@ -1,10 +1,10 @@
 import { Suspense } from 'react';
-import LoansInner from './LoansInner';
+import NewLoanInner from './NewLoanInner';
 
-export default function LoansPage() {
+export default function NewLoanPage() {
   return (
     <Suspense fallback={<Fallback />}>
-      <LoansInner />
+      <NewLoanInner />
     </Suspense>
   );
 }
