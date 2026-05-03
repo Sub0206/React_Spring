@@ -35,6 +35,21 @@ export default function NewLoan() {
   const [client, setClient] = useState<Client | null>(null);
   const [step, setStep] = useState<Step>("review");
 
+  // P0 — Risk warning modal data. Fetched from /clients/{id}/risk-summary.
+  type RiskSummary = {
+    kind: "on_track" | "overdue_mild" | "overdue_high";
+    late_payments: number;
+    missed_months: string[];
+    missed_months_count: number;
+    overdue_count: number;
+    overdue_amount: number;
+    overdue_loans: { loan_id: string; kind: string; overdue_count: number; overdue_amount: number }[];
+    active_loan_count: number;
+  };
+  const [riskSummary, setRiskSummary] = useState<RiskSummary | null>(null);
+  const [riskWarnOpen, setRiskWarnOpen] = useState(false);
+  const [riskAcknowledged, setRiskAcknowledged] = useState(false);
+
   // Upload
   const [file, setFile] = useState<{ name: string; size: number; b64?: string } | null>(null);
   const [months, setMonths] = useState<3 | 6 | 12>(6);
@@ -51,8 +66,20 @@ export default function NewLoan() {
 
   useEffect(() => {
     (async () => {
-      try { setClient(await api<Client>(`/clients/${clientId}`)); }
-      catch (e: any) { Alert.alert("Error", e.message); }
+      try {
+        setClient(await api<Client>(`/clients/${clientId}`));
+      } catch (e: any) {
+        Alert.alert("Error", e.message);
+      }
+      try {
+        const rs = await api<RiskSummary>(`/clients/${clientId}/risk-summary`);
+        setRiskSummary(rs);
+        if (rs.kind !== "on_track") {
+          // Show the blocking modal. User MUST explicitly acknowledge before
+          // the screen's primary actions unlock.
+          setRiskWarnOpen(true);
+        }
+      } catch {/* silent — non-fatal */}
     })();
   }, [clientId]);
 
@@ -663,7 +690,92 @@ export default function NewLoan() {
           </>
         )}
       </ScrollView>
+
+      {/* P0: Risk-warning modal shown when the selected client already has
+          overdue or at-risk active loans. User MUST explicitly acknowledge
+          before any primary action (upload / analyze / approve) unlocks. */}
+      <Modal visible={riskWarnOpen} transparent animationType="fade" onRequestClose={() => {}}>
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalSheet, { maxHeight: "90%" }]}>
+            {(() => {
+              const isHigh = riskSummary?.kind === "overdue_high";
+              const tone = isHigh ? Colors.riskHigh : Colors.riskMild;
+              const bg   = isHigh ? Colors.riskHighSoft : Colors.riskMildSoft;
+              return (
+                <>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                    <View style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: bg, alignItems: "center", justifyContent: "center" }}>
+                      <Ionicons name={isHigh ? "alert-circle" : "warning"} size={22} color={tone} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 18, fontWeight: "800", color: Colors.textPrimary }}>
+                        {isHigh ? "This borrower is AT RISK" : "Borrower has OVERDUE EMIs"}
+                      </Text>
+                      <Text style={{ color: Colors.textSecondary, marginTop: 2, fontSize: 12 }}>
+                        Review before creating a new loan.
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={{ backgroundColor: bg, padding: 14, borderRadius: 14, marginTop: 14, gap: 8 }}>
+                    <RiskRow label="Active loans" value={String(riskSummary?.active_loan_count ?? 0)} tone={Colors.textPrimary} />
+                    <RiskRow label="Overdue EMIs" value={String(riskSummary?.overdue_count ?? 0)} tone={tone} />
+                    <RiskRow label="Overdue amount" value={`\u20b9${(riskSummary?.overdue_amount ?? 0).toLocaleString()}`} tone={tone} />
+                    <RiskRow label="Late payments (history)" value={String(riskSummary?.late_payments ?? 0)} tone={Colors.textPrimary} />
+                    {(riskSummary?.missed_months?.length ?? 0) > 0 && (
+                      <RiskRow
+                        label="Missed months"
+                        value={riskSummary!.missed_months.join(", ")}
+                        tone={tone}
+                      />
+                    )}
+                  </View>
+                  {isHigh && (riskSummary?.overdue_loans?.length ?? 0) > 0 && (
+                    <View style={{ marginTop: 12 }}>
+                      <Text style={{ fontSize: 12, fontWeight: "800", color: Colors.textMuted, letterSpacing: 0.3, marginBottom: 6 }}>
+                        LOANS WITH DELAYS
+                      </Text>
+                      {(riskSummary!.overdue_loans || []).slice(0, 5).map((l) => (
+                        <View key={l.loan_id} style={{ flexDirection: "row", justifyContent: "space-between", paddingVertical: 4 }}>
+                          <Text style={{ color: Colors.textPrimary, fontSize: 12, fontWeight: "600" }}>
+                            {l.loan_id.slice(0, 14)}\u2026
+                          </Text>
+                          <Text style={{ color: tone, fontSize: 12, fontWeight: "700" }}>
+                            {l.overdue_count} overdue \u00b7 \u20b9{l.overdue_amount.toLocaleString()}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                  <View style={{ height: Spacing.md }} />
+                  <PrimaryButton
+                    testID="risk-ack-continue"
+                    title={isHigh ? "I understand the risk, continue" : "Continue anyway"}
+                    variant={isHigh ? "danger" : "primary"}
+                    onPress={() => { setRiskAcknowledged(true); setRiskWarnOpen(false); }}
+                  />
+                  <View style={{ height: Spacing.sm }} />
+                  <PrimaryButton
+                    testID="risk-ack-back"
+                    title="Back to clients"
+                    variant="secondary"
+                    onPress={() => { setRiskWarnOpen(false); router.back(); }}
+                  />
+                </>
+              );
+            })()}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
+  );
+}
+
+function RiskRow({ label, value, tone }: { label: string; value: string; tone: string }) {
+  return (
+    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+      <Text style={{ color: Colors.textSecondary, fontSize: 13 }}>{label}</Text>
+      <Text style={{ color: tone, fontSize: 13, fontWeight: "800" }}>{value}</Text>
+    </View>
   );
 }
 

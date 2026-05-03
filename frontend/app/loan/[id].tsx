@@ -222,10 +222,15 @@ export default function LoanDetail() {
             ? (isLate ? "alert-circle" : "checkmark-circle")
             : isOverdue ? "alert-circle" : bucket === "current" ? "flash" : bucket === "past" ? "lock-closed" : "time-outline";
 
-          // Only current-month row gets active action buttons
-          const canPay       = bucket === "current" && !isPaid && loan.status === "active";
-          const canResched   = bucket === "current" && !isPaid && loan.status === "active";
-          const canUndo      = bucket === "current" && isPaid  && loan.status !== "completed";
+          // P0 rule: every unpaid EMI (past or current) must allow Mark Paid +
+          // Reschedule. Only future (not-yet-due) rows are locked — and even
+          // those are payable for the special "pay ahead" case but not
+          // re-schedulable. A past-due / overdue EMI is ALWAYS payable.
+          const isUnpaid = !isPaid;
+          const isLoanOpen = loan.status === "active";
+          const canPay       = isUnpaid && isLoanOpen && bucket !== "future";
+          const canResched   = isUnpaid && isLoanOpen && bucket !== "future";
+          const canUndo      = isPaid && loan.status !== "completed";
 
           const statusLabel = isPaid
             ? (isLate ? "OVERDUE PAID" : "PAID")

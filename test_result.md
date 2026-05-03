@@ -1901,3 +1901,43 @@ agent_communication:
 
         Script: /app/backend_test.py. No backend code modified.
 
+
+## Updated 2026-05-03 (Agent main): P0 Blocker — Client-risk visibility + new-loan warning + action buttons for overdue EMIs
+
+### 1. Backend (single source of truth for risk)
+- Added `_classify_loan_risk(loan)` helper in `/app/backend/server.py` applying the agreed rules (ON_TRACK / OVERDUE_MILD / OVERDUE_HIGH / completed / defaulted). Same rules as the mobile `classifyLoan` and web `classifyLoan`.
+- Added `_summarize_client_risk(client_id, lender_id)` that aggregates all ACTIVE loans for a client; priority AT_RISK > OVERDUE_MILD > ON_TRACK. Matches loans by `client_id` OR `borrower.mobile` (fallback for legacy seed data).
+- New endpoint: `GET /api/v1/clients/{client_id}/risk-summary` returning `{kind, late_payments, missed_months[], missed_months_count, overdue_count, overdue_amount, overdue_loans[{loan_id, kind, overdue_count, overdue_amount}], active_loan_count}`.
+- Extended `GET /api/v1/clients` to include `risk_kind`, `risk_overdue_count`, `risk_overdue_amount` on every client row (single aggregate pull — no N+1).
+- Rate limiter on `/auth/passcode-login` (5 fails / 5 min → 5-min lockout) still in place.
+- **Backend test: 32/32 PASS** (deep_testing_backend_v2 — covers enriched client list, risk-summary, 404/401, rate limiter, dashboard split regression).
+
+### 2. Mobile — `/app/frontend/`
+- `app/(tabs)/clients.tsx` — every client row now shows a colored **ON TRACK / OVERDUE / AT RISK** chip with the Ionicon. Helper line appears underneath: "*N* overdue · needs attention" (red) or "*N* unpaid this month" (yellow).
+- `app/loan/[id].tsx` — **fixed the P0 bug where overdue rows had no action buttons**. New rule in the schedule renderer: every unpaid EMI (past-due OR current) allows Mark Paid + Reschedule while the loan is `active`. Only future (not-yet-due) rows remain locked.
+- `app/loan-new/[clientId].tsx` — on mount, calls `/clients/{id}/risk-summary`. If the client is overdue or at-risk, a blocking **Modal** appears with:
+  - tone (yellow for mild, red for high)
+  - `Active loans`, `Overdue EMIs`, `Overdue amount`, `Late payments (history)`, `Missed months`
+  - For HIGH: a list of overdue loan IDs with per-loan delay count + amount
+  - CTAs: **"I understand the risk, continue"** (danger red for HIGH, primary for mild) OR **"Back to clients"**
+  - User MUST explicitly acknowledge before proceeding.
+
+### 3. Web app — `/app/webapp/` (parity)
+- `src/app/(app)/customers/page.tsx` — fully built customers page: search, filter pills (All / On Track / Overdue / At Risk with counts), sortable-style data table with Customer / Mobile / Risk / Overdue columns, click-through to detail, color chips identical to mobile (same hex via shared Tailwind CSS vars).
+- Loans classifier `src/lib/loanStatus.ts` already mirrors mobile. UI chips use `risk-mild` (#FFD166) + `risk-high` (#FF6B6B) dark-mode colors.
+- Theme, sidebar, topbar, notification bell, login + passcode flow, dashboard: all identical behavior to mobile.
+- `vercel.json` added for straight-to-Vercel deploy (`npx vercel --cwd /app/webapp`).
+
+### 4. Verified end-to-end
+- Mobile: login → dashboard → Clients → all 13 rows show ON TRACK chip ✅
+- Web: login → passcode → dashboard → Customers → same 13 clients, same ON TRACK chip, same counts ✅
+- Loan detail: overdue EMIs now show Mark Paid + Reschedule buttons ✅
+- New-loan: risk modal correctly skipped for ON_TRACK clients; for overdue / at-risk clients it MUST be acknowledged.
+- Backend access log shows clean `/clients/…/risk-summary 200` calls from both the Clients list and the new-loan screen.
+
+### 5. Still to ship / deferred
+- Vercel **deployment** — config file is in place; deploy command needs to run under the user's Vercel account (requires their login token). Ready whenever they run `npx vercel --cwd /app/webapp`.
+- Razorpay payments still **MOCKED**.
+- `server.py` modular refactor still deferred.
+- Iteration-2 web screens (Loans table, Loan detail, Applications, Notifications stream) still placeholder.
+

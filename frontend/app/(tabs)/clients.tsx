@@ -23,7 +23,23 @@ type Client = {
   reject_reason?: string | null;
   avatar?: string | null;
   created_at: string;
+  /** Populated by the enriched /clients endpoint. */
+  risk_kind?: "on_track" | "overdue_mild" | "overdue_high" | null;
+  risk_overdue_count?: number | null;
+  risk_overdue_amount?: number | null;
 };
+
+/** Visual metadata for the per-client risk badge on the list. */
+function riskChip(kind?: string | null) {
+  switch (kind) {
+    case "overdue_high":
+      return { label: "AT RISK", color: Colors.riskHigh, bg: Colors.riskHighSoft, border: Colors.riskHighBorder, icon: "alert-circle" as const };
+    case "overdue_mild":
+      return { label: "OVERDUE", color: Colors.riskMild, bg: Colors.riskMildSoft, border: Colors.riskMildBorder, icon: "warning" as const };
+    default:
+      return { label: "ON TRACK", color: Colors.success, bg: Colors.successSoft, border: Colors.successSoft, icon: "checkmark-circle" as const };
+  }
+}
 
 export default function Clients() {
   const styles = useScreenStyles();
@@ -118,6 +134,7 @@ export default function Clients() {
         }
         renderItem={({ item }) => {
           const rejected = item.status === "rejected";
+          const risk = riskChip(item.risk_kind);
           return (
             <TouchableOpacity
               testID={`client-item-${item.client_id}`}
@@ -127,12 +144,21 @@ export default function Clients() {
             >
               <InitialsAvatar name={item.name} size={52} color={rejected ? Colors.secondary : Colors.primary} />
               <View style={{ flex: 1 }}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                   <Text style={styles.name}>{item.name}</Text>
                   {rejected && (
                     <View style={styles.rejectChip}>
                       <Ionicons name="close-circle" size={11} color="#fff" />
                       <Text style={styles.rejectChipText}>REJECTED</Text>
+                    </View>
+                  )}
+                  {!rejected && (
+                    <View
+                      testID={`client-risk-${item.client_id}`}
+                      style={[styles.riskChip, { backgroundColor: risk.bg, borderColor: risk.border }]}
+                    >
+                      <Ionicons name={risk.icon} size={10} color={risk.color} />
+                      <Text style={[styles.riskChipText, { color: risk.color }]}>{risk.label}</Text>
                     </View>
                   )}
                 </View>
@@ -150,6 +176,16 @@ export default function Clients() {
                   </Text>
                 ) : (
                   <View style={styles.badges}>
+                    {item.risk_kind === "overdue_mild" && (item.risk_overdue_count || 0) > 0 && (
+                      <Text style={[styles.riskHelper, { color: Colors.riskMild }]}>
+                        {item.risk_overdue_count} unpaid this month
+                      </Text>
+                    )}
+                    {item.risk_kind === "overdue_high" && (item.risk_overdue_count || 0) > 0 && (
+                      <Text style={[styles.riskHelper, { color: Colors.riskHigh }]}>
+                        {item.risk_overdue_count} overdue \u00b7 needs attention
+                      </Text>
+                    )}
                     {item.aadhaar_verified && <Verified label="Aadhaar" />}
                     {item.pan_verified && <Verified label="PAN" />}
                     {item.otp_verified && <Verified label="OTP" />}
@@ -212,6 +248,13 @@ function useScreenStyles() {
   },
   rejectChipText: { color: "#fff", fontSize: 9, fontWeight: "800", letterSpacing: 0.5 },
   rejectReason: { color: "#D97706", fontSize: 12, marginTop: 4, fontStyle: "italic" },
+  riskChip: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: Radii.pill,
+    borderWidth: 1,
+  },
+  riskChipText: { fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
+  riskHelper: { fontSize: 12, fontWeight: "700" },
   avatar: { width: 52, height: 52, borderRadius: 26, backgroundColor: Colors.bgAlt },
   name: { fontSize: 16, fontWeight: "700", color: Colors.textPrimary },
   meta: { color: Colors.textSecondary, fontSize: 13, marginTop: 2 },

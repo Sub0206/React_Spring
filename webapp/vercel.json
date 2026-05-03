@@ -1,0 +1,11 @@
+// vercel.json — deploy config for /app/webapp
+// Run `vercel --cwd /app/webapp` to deploy.
+// Set env var `LENDIQ_API_ORIGIN` in your Vercel project if the backend is on a
+// different origin in production (the default rewrite points at localhost:8001).
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "buildCommand": "yarn build",
+  "devCommand": "yarn dev",
+  "installCommand": "yarn install"
+}
