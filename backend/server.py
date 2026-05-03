@@ -951,15 +951,20 @@ async def client_list(q: Optional[str] = None, current: UserPublic = Depends(get
     client_ids = [d["client_id"] for d in docs]
     mobiles = [d.get("mobile") for d in docs if d.get("mobile")]
     mobile_to_cid = {d["mobile"]: d["client_id"] for d in docs if d.get("mobile")}
+    # Build a name lookup too (for legacy loans that only carry borrower.name).
+    names = [d.get("name") for d in docs if d.get("name")]
+    name_to_cid = {d["name"]: d["client_id"] for d in docs if d.get("name")}
     risk_by_cid: dict[str, dict] = {cid: {"kind": "on_track", "count": 0, "amount": 0.0} for cid in client_ids}
     if client_ids:
         loan_cursor = db.loans.find(
             {
-                "lender_id": current.user_id,
+                # Loans use `funded_by` (lender's user_id); they do NOT carry `lender_id`.
+                "funded_by": current.user_id,
                 "status": {"$in": ["active", "disbursed"]},
                 "$or": [
                     {"client_id": {"$in": client_ids}},
                     {"borrower.mobile": {"$in": mobiles}},
+                    {"borrower.name": {"$in": names}},
                 ],
             },
             {"_id": 0},
@@ -969,6 +974,9 @@ async def client_list(q: Optional[str] = None, current: UserPublic = Depends(get
             if not cid:
                 bmob = (l.get("borrower") or {}).get("mobile")
                 cid = mobile_to_cid.get(bmob)
+            if not cid:
+                bname = (l.get("borrower") or {}).get("name")
+                cid = name_to_cid.get(bname)
             if not cid or cid not in risk_by_cid:
                 continue
             c = _classify_loan_risk(l)
@@ -1085,15 +1093,23 @@ async def _summarize_client_risk(client_id: str, lender_id: str) -> dict:
         {"client_id": client_id, "lender_id": lender_id}, {"_id": 0}
     )
     mobile = client.get("mobile") if client else None
+    # NOTE: Loans are scoped by `funded_by` (the lender user_id), NOT `lender_id`.
+    # `lender_id` is a client-collection concept; loans do not carry that field.
     loan_query: dict = {
-        "lender_id": lender_id,
+        "funded_by": lender_id,
         "status": {"$in": ["active", "disbursed"]},
     }
-    if mobile:
-        loan_query["$or"] = [
+    if client:
+        or_clauses: list = [
             {"client_id": client_id},
-            {"borrower.mobile": mobile},
         ]
+        if mobile:
+            or_clauses.append({"borrower.mobile": mobile})
+        # Fallback for legacy seed data that stores only the name on the loan
+        name = client.get("name")
+        if name:
+            or_clauses.append({"borrower.name": name})
+        loan_query["$or"] = or_clauses
     else:
         loan_query["client_id"] = client_id
     cursor = db.loans.find(loan_query, {"_id": 0})

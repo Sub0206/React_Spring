@@ -1941,3 +1941,158 @@ agent_communication:
 - `server.py` modular refactor still deferred.
 - Iteration-2 web screens (Loans table, Loan detail, Applications, Notifications stream) still placeholder.
 
+
+
+## Updated 2026-05-03 (Agent main): Web App Iteration 2 verified + Risk-summary backend fix + Vercel-ready
+
+### 1. Web App Iteration 2 — visually verified on 1440x900 (Chromium)
+Screens shipped and visually confirmed via playwright screenshots:
+- `/loans` — searchable table with **5 filter chips** (All / On Track / Overdue Mild / At Risk / Completed), per-column sort, risk chip with coloured dot, overdue count + amount line, navigation to detail. Sample counts: All 38, On Track 29, Overdue (Mild) 1, At Risk 4, Completed 3.
+- `/loans/[id]` — hero card (initials avatar, borrower, principal / EMI / tenure / interest tiles), progress bar coloured by risk, **repayment schedule** with per-row Mark Paid + Reschedule + Undo actions.
+  - **P0 rule respected**: every unpaid EMI (past AND current month) exposes Mark Paid + Reschedule. Future EMIs remain locked.
+  - Row tint: prior-month unpaid = `risk-highSoft`; current-month unpaid = `risk-mildSoft`.
+  - Reschedule opens a modal with a date input + Cancel/Reschedule; Undo is available on paid rows.
+- `/loans/new` — customer picker → pulls `/clients/{id}/risk-summary` → **risk warning modal** fires for OVERDUE / AT RISK borrowers with Active loans / Overdue EMIs / Overdue amount / Late payments / Missed months, plus a "Loans with delays" list for HIGH risk. "I understand the risk, continue" is the only way to proceed (and must be clicked before the `Create loan` button enables).
+- `/notifications` — All / Unread-only toggles, empty-state "All caught up" card, per-notification Card with unread indicator.
+- `/customers` — colour-coded Risk and Overdue columns; filter pills now show real counts (All 13 · On Track 9 · Overdue 0 · At Risk 4).
+- Theme tokens + dark-mode classes already wired via CSS vars in `globals.css` (shared with mobile `src/theme.ts`).
+
+### 2. Backend fix — `_summarize_client_risk` + `client_list` risk enrichment
+**Discovered bug**: the risk-summary endpoint queried `loans.lender_id` but the loans collection scopes by `funded_by`. Result: every client appeared ON TRACK on the customers list even when the dashboard showed AT RISK loans.
+
+**Fix applied** in `/app/backend/server.py`:
+- `_summarize_client_risk` now queries `{"funded_by": lender_id}` and additionally falls back to matching by `borrower.name` (not just `borrower.mobile`) for legacy seed data that omits the mobile key.
+- `client_list` (`GET /clients`) now uses the same strategy for its N-fast aggregate pull: `funded_by` + `$or` on `client_id` / `borrower.mobile` / `borrower.name`.
+- Confirmed via curl that after the fix:
+  - `Rahul Desai (cli_seed_006)` → `kind=overdue_high, overdue_count=2, overdue_amount=₹15,200, missed_months=[Mar 2026, Apr 2026]`.
+  - `/api/v1/clients` now reports the same 4 AT RISK names as the dashboard's portfolio_health (Arjun Mehta, Priya Nair, Rahul Desai, Meera Joshi).
+
+### 3. Vercel deploy prep
+- `/app/webapp/next.config.mjs` now reads `LENDIQ_API_ORIGIN` (with `NEXT_PUBLIC_LENDIQ_API_ORIGIN` as fallback) and defaults to `http://localhost:8001` in dev.
+- `/app/webapp/vercel.json` upgraded: explicit buildCommand/devCommand/installCommand, standard security headers (X-Frame-Options / X-Content-Type-Options / Referrer-Policy).
+- `/app/webapp/.env.production.example` — documents the two env vars (`LENDIQ_API_ORIGIN`, `NEXT_PUBLIC_APP_NAME`).
+- `/app/webapp/.gitignore` — keeps `node_modules`, `.next`, `.env.*` out of the repo.
+- `/app/webapp/DEPLOY.md` — three deploy paths (GitHub → Vercel one-click, Vercel CLI, or drag-n-drop zip) with verify checklist.
+
+### 4. Build sanity
+- `cd /app/webapp && LENDIQ_API_ORIGIN=http://localhost:8001 yarn build` → ✅ compiled successfully, 13 pages (11 static, 1 dynamic `/loans/[id]`, 1 not-found). No TypeScript / ESLint errors.
+
+### 5. Still pending
+- User to actually run `vercel --prod` OR connect GitHub repo (requires user's Vercel login). All config is in place.
+- Razorpay payments still MOCKED.
+- `/app/backend/server.py` (~4,225 lines) modular refactor deferred until after web-app deploy.
+
+backend:
+  - task: "Risk-summary + client-list scoped by funded_by (iteration 25)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          Iteration-25 lightweight regression — 27/27 PASS on live preview
+          backend (https://lending-hub-63.preview.emergentagent.com), all via
+          /api/v1/*. Auth via POST /auth/passcode-login (9876543210 / 5678) → 200
+          JWT. Test script: /app/backend_test_iter25.py.
+
+          TEST CASE 1 — GET /api/v1/clients (enriched):
+            • status=200, count=13 (exact).
+            • Every one of the 13 clients carries risk_kind, risk_overdue_count,
+              risk_overdue_amount (no missing keys).
+            • Exactly 4 clients have risk_kind='overdue_high' with names
+              ['Arjun Mehta', 'Meera Joshi', 'Priya Nair', 'Rahul Desai'] —
+              matches the expected seed quadruple.
+            • Remaining 9 are risk_kind='on_track'. ✔
+
+          TEST CASE 2 — GET /api/v1/clients/cli_seed_006/risk-summary (Rahul Desai):
+            • status=200, all 8 required keys present
+              (kind, late_payments, missed_months, missed_months_count,
+               overdue_count, overdue_amount, overdue_loans, active_loan_count).
+            • kind='overdue_high', overdue_count=2, overdue_amount=15200.0,
+              active_loan_count=1, missed_months=['Apr 2026','Mar 2026']
+              (contains both required values; order differs but both present),
+              overdue_loans=[{loan_id:'loan_seed_l7_rollback_79781f',
+              kind:'overdue_high', overdue_count:2, overdue_amount:15200.0}] —
+              exactly 1 item whose loan_id startswith 'loan_seed_l7_'. ✔
+
+          TEST CASE 3 — GET /api/v1/clients/cli_seed_000/risk-summary (Rajesh Kumar):
+            • status=200, kind='on_track', overdue_count=0, overdue_amount=0.0,
+              missed_months=[], active_loan_count=2 (>=0). ✔
+
+          TEST CASE 4 — GET /api/v1/dashboard (regression):
+            • status=200. portfolio_health={'on_track':4, 'overdue_mild':0,
+              'overdue_high':4, 'at_risk':6, 'completed':3, 'defaulted':1,
+              'overdue':4}. All 5 required keys present (plus additional
+              overdue_mild/overdue_high/overdue granularity keys) — every
+              value is a proper int.
+            • at_risk = 6 (informational — the review request noted "at_risk
+              should equal the number of risk_kind==overdue_high loans for this
+              lender", which is a LOAN-level count, distinct from the 4
+              overdue_high CLIENTS in TC1; 6 is the backend's current at-risk
+              loan count and there is no code-level change from prior iterations
+              so this is not a regression).
+
+          TEST CASE 5 — edge cases:
+            • GET /api/v1/clients/cli_does_not_exist/risk-summary (Bearer)
+              → 404 {'detail':'Client not found'}. ✔
+            • GET /api/v1/clients/cli_seed_006/risk-summary (NO Authorization)
+              → 401 {'detail':'Missing or invalid auth token'}. ✔
+
+          Code inspection confirms (server.py lines 932-997 client_list +
+          1082-1153 _summarize_client_risk): both paths query loans with
+          `funded_by: current.user_id` (not lender_id) plus an $or triple
+          fallback on client_id / borrower.mobile / borrower.name. Fix is
+          correctly applied. No backend code modified during testing.
+      - working: true
+        agent: "main"
+        comment: |
+          Fixed a real P0 regression: `_summarize_client_risk` and the aggregate
+          block inside `client_list` used the wrong scoping field — loans.lender_id
+          does not exist, loans.funded_by does. After fix:
+            • GET /api/v1/clients/cli_seed_006/risk-summary → kind='overdue_high',
+              overdue_count=2, overdue_amount=15200, missed_months=[Mar 2026, Apr 2026].
+            • GET /api/v1/clients now returns risk_kind='overdue_high' for all
+              4 clients whose loans are AT RISK on the dashboard (Arjun Mehta,
+              Priya Nair, Rahul Desai, Meera Joshi). Previously all 13 were
+              mislabelled on_track.
+          Also added `borrower.name` match to the fallback $or so legacy seed
+          loans (which omit borrower.mobile) are still rolled up correctly.
+          No schema migration performed on the existing DB.
+          Please re-run a lightweight regression to confirm:
+            1. `GET /api/v1/clients` still returns 13 rows for demo lender AND
+               exactly 4 of them have risk_kind='overdue_high'.
+            2. `GET /api/v1/clients/cli_seed_006/risk-summary` returns the
+               expected non-zero shape shown above.
+            3. No other endpoints regressed (dashboard counts unchanged).
+
+frontend:
+  - task: "Web App Iteration 2 (Loans table + Detail + New Loan modal + Notifications)"
+    implemented: true
+    working: true
+    file: "/app/webapp/src/app/(app)/loans/, notifications/, customers/"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          All four P0 screens visually verified at 1440x900 after login with demo
+          credentials 9876543210 / 5678.
+          - Loans table: 5 filter chips render, counts match backend, badges show
+            correct colours (AT RISK red, OVERDUE MILD amber, ON TRACK green,
+            COMPLETED blue, DEFAULTED red).
+          - Loan detail: Mark Paid + Reschedule buttons render for every unpaid
+            past-due row; Undo renders on paid rows; Reschedule modal opens.
+          - New loan: picking an AT RISK borrower (Arjun Mehta) pops the risk
+            warning modal with 2 overdue EMIs ₹31,000, missed months Apr/Mar 2026,
+            loan ID list. Acknowledging enables the Create loan button.
+          - Notifications: empty state + filter pills + mark-all-read button.
+          - Customers: risk chips now reflect the backend fix (4 AT RISK rows).
+          Screenshots on disk: /tmp/webapp_*.png (loans_list, loans_overdue_mild,
+          loans_at_risk, loan_detail, customers_risk, risk_modal_arjun,
+          new_loan_filled_arjun, notifications).
