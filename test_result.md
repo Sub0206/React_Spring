@@ -2467,3 +2467,55 @@ frontend:
           content offset, topbar layout matches spec exactly (centre search,
           right-aligned bell + profile). Verified with Playwright + screenshots,
           re-deployed to Vercel prod.
+
+## Updated 2026-05-07 (Agent main): Iteration 30 — Web ↔ Mobile strict parity
+
+### Context
+User explicitly stated the mobile app is the single source of truth. I audited `/app/frontend/app/client/[id].tsx`, `/app/frontend/app/(tabs)/clients.tsx`, and `/app/frontend/app/(tabs)/profile.tsx` and rebuilt the corresponding web pages 1:1.
+
+### Web changes
+1. **`/app/webapp/src/app/(app)/customers/[id]/CustomerDetailInner.tsx`** — fully rewritten:
+   - Hits the **same** endpoints the mobile app uses: `GET /clients/{id}`, `GET /clients/{id}/loans`, `GET /clients/{id}/risk-summary` (plus `GET /loans` for funded loans where the applications list is empty).
+   - Primary-colour hero card with initials avatar, name, phone, verified mini-chips (Aadhaar / PAN / Mobile) + risk chip — mirrors mobile's `heroBlock`.
+   - KYC card with Aadhaar + PAN rows showing `aadhaar_name` / `pan_name` + `pan_dob` + green verified tick — mirrors mobile's KYC card.
+   - Address card (only rendered when any address line is populated) — mirrors mobile's addressRow.
+   - Rejected-client banner preserved.
+   - "Loan tracks" section with `+ New loan` CTA → `/loans/new?customer=<id>`; lists applications first (with status pill + AI score) and then funded loans.
+   - Remove-client button hooked up to `DELETE /clients/{id}`.
+   - No more desktop-only extras (metric tiles, late-payments table, missed-months pills) — those were interpretive.
+
+2. **`/app/webapp/src/app/(app)/settings/page.tsx`** — rewritten to mirror mobile's Profile tab:
+   - Profile card: avatar + name + mobile + email (if present) + Verified Lender chip.
+   - Appearance card: Match system / Light / Dark theme picker (same options as mobile Appearance).
+   - Account card: "Sign out" button with the same copy as mobile logout.
+   - Removed placeholder text and stub links.
+
+3. Layout (sidebar + topbar) already in mobile-parity spec from Iteration 29 — no change this iteration.
+
+### Verified
+- Playwright 1440×900:
+  - `/customers/cli_test_scenario_4_high_loan` → hero shows AT RISK chip, Aadhaar/PAN/Mobile ✓ chips, KYC + Address + Loan tracks header ✅
+  - `/customers/cli_test_scenario_5_clean` → hero shows ON TRACK chip, identical layout ✅
+  - `/settings` → Profile card, Appearance picker with "Match system" selected, Sign-out red button ✅
+- `page.locator('aside a').count()` = **5**; Applications link = **0**.
+- Build clean (11 pages, no TS errors).
+
+### Deployed
+**https://lendiq-web-delta.vercel.app** (deploy `lendiq-1yeo7tw5y-subhash3`, 2026-05-07).
+
+frontend:
+  - task: "Web ↔ Mobile strict parity (Customer detail + Settings, iteration 30)"
+    implemented: true
+    working: true
+    file: "/app/webapp/src/app/(app)/customers/[id]/CustomerDetailInner.tsx, /app/webapp/src/app/(app)/settings/page.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Rebuilt web Customer Detail and Settings to mirror the mobile screens
+          1:1. Same endpoints, same sections, same actions. Removed interpretive
+          desktop extras. Deployed to prod.
+
