@@ -30,7 +30,10 @@ type RiskSummary = {
 export default function NewLoanInner() {
   const router = useRouter();
   const search = useSearchParams();
-  const clientIdParam = search?.get('clientId') || '';
+  // Support both ?clientId=... and ?customer=... so the customer-detail page
+  // can deep-link in with either spelling.
+  const clientIdParam =
+    search?.get('clientId') || search?.get('customer') || '';
 
   const [clients, setClients] = useState<Client[]>([]);
   const [clientId, setClientId] = useState<string>(clientIdParam);

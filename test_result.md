@@ -2519,3 +2519,43 @@ frontend:
           1:1. Same endpoints, same sections, same actions. Removed interpretive
           desktop extras. Deployed to prod.
 
+
+## Updated 2026-05-07 (Agent main): Iteration 31 — Add-client wizard + new-loan deep-link
+
+### What shipped
+1. **`/customers/add` — 4-step Add-Client wizard** mirroring `/app/frontend/app/client/add.tsx`:
+   - Hero with progress bar (`heroBar` + `progressFill` parity, 20→40→65→90→100%).
+   - Step 1: name + 10-digit mobile (validated).
+   - Step 2: address (line1, line2, city, state, pincode).
+   - Step 3: Aadhaar — `POST /clients/verify-aadhaar` (real Verhoeff-checksum check by the backend, masked + name returned on success).
+   - Step 4: PAN — `POST /clients/verify-pan` (returns name + DOB + entity).
+   - Final: `POST /clients` saves the client and routes to `/customers/[id]`.
+   - Client mobile-OTP step intentionally omitted on web (lender has Aadhaar + PAN proofs in front of them on a desktop console; the mobile app keeps the device-side OTP for in-person field onboarding).
+2. **`Add client` CTA** wired on the Customers list (top-right primary button).
+3. **New-loan deep link** — `NewLoanInner.tsx` now accepts both `?clientId=...` and `?customer=...` so the customer-detail page can deep-link straight into the new-loan flow with the customer pre-selected. Risk warning modal is the existing strict implementation from Iteration 26 and continues to fire correctly.
+
+### Verified
+- Live URL test on **https://lendiq-web-delta.vercel.app**: login → dashboard → customers → customer detail → settings — all 4 screens render correctly. Sidebar = 5 items, Applications = 0.
+- Local Playwright walked Add-Client wizard: progress bar advances correctly, step-2 address persists, step-3 Aadhaar shows the backend checksum error gracefully ("Invalid Aadhaar checksum.") and disables Continue until verified — exactly matching mobile UX.
+- Build clean (12 pages, including new dynamic `/customers/[id]` and `/customers/add`).
+
+### Deployed
+**https://lendiq-web-delta.vercel.app** (deploy `lendiq-ocd5607tv-subhash3`, 2026-05-07).
+
+frontend:
+  - task: "Add-client wizard + loan-new deep-link parity (iteration 31)"
+    implemented: true
+    working: true
+    file: "/app/webapp/src/app/(app)/customers/add/*, /app/webapp/src/app/(app)/loans/new/NewLoanInner.tsx, /app/webapp/src/app/(app)/customers/page.tsx"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Optional flows finished: Add-Client wizard mirrors mobile screen-by-screen
+          (4 steps + done state), Customers list now has the matching primary CTA,
+          and /loans/new accepts both customer/clientId query params for deep-linking
+          from the customer detail page. Live URL re-verified via Playwright.
+

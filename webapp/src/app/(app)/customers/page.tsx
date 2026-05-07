@@ -3,9 +3,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ChevronRight, Search, AlertCircle, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { ChevronRight, Search, AlertCircle, AlertTriangle, CheckCircle2, Plus } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
+import { Button } from '@/components/ui/Button';
 import { api } from '@/lib/api';
 import { initials, cn } from '@/lib/utils';
 
@@ -71,6 +72,9 @@ export default function CustomersPage() {
           <h1 className="text-2xl font-extrabold tracking-tight">Customers</h1>
           <p className="text-sm text-text-secondary">{clients.length} verified clients</p>
         </div>
+        <Button onClick={() => router.push('/customers/add')}>
+          <Plus size={16} /> Add client
+        </Button>
       </div>
 
       <Card className="p-4">
