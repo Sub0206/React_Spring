@@ -2559,3 +2559,64 @@ frontend:
           and /loans/new accepts both customer/clientId query params for deep-linking
           from the customer detail page. Live URL re-verified via Playwright.
 
+
+## Updated 2026-05-07 (Agent main): Iteration 32 — Heavy loan-new flow ported to web
+
+### Goal
+Port `/app/frontend/app/loan-new/[clientId].tsx` (1,015 LOC, 6-step analyse-and-fund flow) to the desktop web app, plus the `/loan-approve/[clientId]` follow-up.
+
+### Files added
+1. **`/app/webapp/src/app/(app)/loans/new/[clientId]/page.tsx`** — Suspense wrapper.
+2. **`/app/webapp/src/app/(app)/loans/new/[clientId]/NewLoanWizardInner.tsx`** — full 6-step wizard:
+   - **Review** — KYC summary card.
+   - **Upload** — period selector (3/6/12 months) + drag-zone-style PDF picker (FileReader → base64 for the API call).
+   - **Analyzing** — transient loader.
+   - **Analysis** — bounce-risk hero, "Why this risk?" reasons list, parsing-confidence stats, monthly-activity tiles, AI lending-decision banner, red flags, highlights, plus "Download PDF report" / "Check CIBIL" / "Skip CIBIL" actions.
+   - **CIBIL** — branded score-pull screen with `Run CIBIL check` button.
+   - **Summary** — bank-statement risk + CIBIL score + composite-risk roll-up + Reject/Approve buttons.
+   - Risk-warning modal fires automatically for `overdue_mild` / `overdue_high` clients (P0 rule preserved).
+3. **`/app/webapp/src/app/(app)/loans/new/[clientId]/approve/page.tsx`** + **`ApproveLoanInner.tsx`** — final disbursement form. Reads `analysis` and `cibil` payloads from `sessionStorage` (set by the wizard), computes EMI client-side, lets the user upload a UPI/cash receipt as base64, then `POST /loan-apps/approve` to fund the loan.
+
+### Endpoints wired (identical to mobile)
+- `GET  /clients/{id}`
+- `GET  /clients/{id}/risk-summary`
+- `POST /loan-apps/analyze-statement`
+- `POST /loan-apps/check-cibil`
+- `POST /loan-apps/reject`
+- `POST /loan-apps/approve`
+- `GET  /clients/{id}/analysis-report.pdf?months=N` (PDF download via authenticated fetch + Blob → `<a download>` synthetic click)
+
+### Cross-app wiring
+- Customer Detail's "+ New loan" button now routes directly to `/loans/new/<clientId>` (heavy wizard) instead of the old picker form.
+
+### Verified
+- `yarn build` → 12 pages including new `/loans/new/[clientId]` and `/loans/new/[clientId]/approve` (8.58 kB + 4.19 kB respectively, no TS errors).
+- Playwright @ 1440×900 walked the wizard for both a CLEAN client (review → upload → period 12 months) and an AT-RISK client (risk warning modal correctly intercepts):
+  - `/tmp/WIZ_01_step1_review.png` — Step 1 KYC summary.
+  - `/tmp/WIZ_02_step2_upload.png` — Step 2 upload + 6-month period.
+  - `/tmp/WIZ_03_step2_period_12.png` — 12-month period selected.
+  - `/tmp/WIZ_04_risk_warning_modal.png` — AT RISK modal with full breakdown.
+- Sidebar still 5 items (Applications stays gone).
+
+### Deployed
+**https://lendiq-web-delta.vercel.app** (deploy `lendiq-jyn2kv74m-subhash3`, 2026-05-07).
+
+frontend:
+  - task: "Heavy loan-new wizard + approve flow on web (iteration 32)"
+    implemented: true
+    working: true
+    file: "/app/webapp/src/app/(app)/loans/new/[clientId]/*, /app/webapp/src/app/(app)/customers/[id]/CustomerDetailInner.tsx"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: |
+          Heavy loan-new flow now lives on the web at
+          /loans/new/[clientId] → /loans/new/[clientId]/approve. 6-step wizard
+          mirrors mobile (review/upload/analyzing/analysis/cibil/summary), risk
+          warning modal blocks at-risk clients before continuing, and the final
+          ApproveLoanInner submits the loan through /loan-apps/approve. Verified
+          via Playwright + screenshots, then deployed to prod.
+

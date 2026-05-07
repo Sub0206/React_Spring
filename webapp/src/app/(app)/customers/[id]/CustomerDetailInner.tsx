@@ -296,7 +296,7 @@ export default function CustomerDetailInner() {
             {totals.funded > 0 && <> · {totals.funded} funded ({totals.active} active, {totals.completed} completed)</>}
           </p>
         </div>
-        <Button onClick={() => router.push(`/loans/new?customer=${client.client_id}`)}>
+        <Button onClick={() => router.push(`/loans/new/${client.client_id}`)}>
           <Plus size={16} /> New loan
         </Button>
       </div>
